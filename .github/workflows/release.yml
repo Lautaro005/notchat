@@ -14,6 +14,8 @@ jobs:
       contents: write      # create the GitHub release
       id-token: write      # sign build provenance
       attestations: write
+    env:
+      HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,7 +32,7 @@ jobs:
       - run: npm --prefix ui ci
 
       - name: Import Developer ID certificate (when configured)
-        if: ${{ env.APPLE_CERTIFICATE != '' }}
+        if: env.HAS_APPLE_CERT == 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -45,12 +47,18 @@ jobs:
 
       - name: Build universal app
         env:
-          # Empty secrets fall back to the ad-hoc signature in tauri.conf.json.
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: ui/node_modules/.bin/tauri build --target universal-apple-darwin
+          SIGN_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          NOTARY_ID: ${{ secrets.APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          NOTARY_TEAM: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Only pass signing variables that are set; otherwise Tauri keeps the
+          # ad-hoc signature from tauri.conf.json and skips notarization.
+          if [ -n "$SIGN_IDENTITY" ]; then export APPLE_SIGNING_IDENTITY="$SIGN_IDENTITY"; fi
+          if [ -n "$NOTARY_ID" ] && [ -n "$NOTARY_PASSWORD" ] && [ -n "$NOTARY_TEAM" ]; then
+            export APPLE_ID="$NOTARY_ID" APPLE_PASSWORD="$NOTARY_PASSWORD" APPLE_TEAM_ID="$NOTARY_TEAM"
+          fi
+          ui/node_modules/.bin/tauri build --target universal-apple-darwin
 
       - name: Package and checksum
         run: |
