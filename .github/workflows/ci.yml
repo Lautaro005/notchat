@@ -42,9 +42,10 @@ jobs:
         with:
           persist-credentials: false
       - uses: EmbarkStudios/cargo-deny-action@v2
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      # Plain cargo audit: no check-run write permission needed, so it also
+      # works on Dependabot and fork PRs. Unmaintained crates only warn here;
+      # cargo-deny above enforces the reviewed ignore list in deny.toml.
+      - run: cargo install cargo-audit --locked && cargo audit
       - run: npm --prefix ui audit --audit-level=high
 
   codeql:
