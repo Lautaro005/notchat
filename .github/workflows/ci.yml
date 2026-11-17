@@ -46,7 +46,10 @@ jobs:
       # works on Dependabot and fork PRs. Unmaintained crates only warn here;
       # cargo-deny above enforces the reviewed ignore list in deny.toml.
       - run: cargo install cargo-audit --locked && cargo audit
-      - run: npm --prefix ui audit --audit-level=high
+      # Shipped code must be clean. Build tools (vite, svelte-check) are
+      # reported but do not block: they never handle untrusted input.
+      - run: npm --prefix ui audit --omit=dev --audit-level=high
+      - run: npm --prefix ui audit --audit-level=high || echo "::warning::dev-only npm advisories, see log"
 
   codeql:
     runs-on: ubuntu-latest
