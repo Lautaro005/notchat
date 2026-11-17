@@ -12,6 +12,9 @@ ignore = [
   # ttf-parser is unmaintained but has no known vulnerability. It comes in
   # through pdf-extract -> lopdf (text extraction from attached PDFs).
   { id = "RUSTSEC-2026-0192", reason = "unmaintained only; transitive via pdf-extract, no safe upgrade yet" },
+  # chrono is unmaintained but has no known vulnerability. whatsapp-rust and
+  # its wacore crates depend on it, so it stays until they move to jiff/time.
+  { id = "RUSTSEC-2026-0543", reason = "unmaintained only; required by whatsapp-rust 0.7, no safe upgrade yet" },
 ]
 
 [licenses]
