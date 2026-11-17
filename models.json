@@ -1,0 +1,58 @@
+{
+  "llama_server": {
+    "version": "b12441",
+    "arm64": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12441/llama-b12441-bin-macos-arm64.tar.gz",
+      "sha256": "60cd8f23385a2f0548c4aed783472174f67c8ff2a1ba171b72a17223f9706d76",
+      "size": 17011848
+    },
+    "x86_64": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12441/llama-b12441-bin-macos-x64.tar.gz",
+      "sha256": "41d99e4a198b85ea74a8e1e3dacb5e4fca812f555e3e8373cd20c32af2bbb71f",
+      "size": 12769064
+    }
+  },
+  "models": [
+    {
+      "id": "qwen3.5-0.8b-q8",
+      "name": "Qwen3.5 0.8B",
+      "note_es": "El más liviano. Respuestas cortas, cualquier Mac.",
+      "note_en": "The lightest. Short replies, any Mac.",
+      "url": "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf",
+      "sha256": "37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f",
+      "size": 833592096,
+      "min_ram_gb": 8
+    },
+    {
+      "id": "gemma-4-e2b-q4",
+      "name": "Gemma 4 E2B",
+      "note_es": "Recomendado. Buen equilibrio entre calidad y velocidad.",
+      "note_en": "Recommended. Good balance of quality and speed.",
+      "url": "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf",
+      "sha256": "8e30dff3ac4c8434c49a7036fa15564bdbb6044e42bf04550bf1a096ad7e6a52",
+      "size": 2841481184,
+      "min_ram_gb": 8,
+      "recommended": true
+    },
+    {
+      "id": "qwen3.5-4b-q4",
+      "name": "Qwen3.5 4B",
+      "note_es": "Mejor usando herramientas (chats, web).",
+      "note_en": "Better at using tools (chats, web).",
+      "url": "https://huggingface.co/ggml-org/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+      "sha256": "217002fa8008ef4fc6d548353a3aebef055a96e6ff8e0e2c0953ef8254a89c14",
+      "size": 3032091584,
+      "min_ram_gb": 16
+    },
+    {
+      "id": "gemma-4-e4b-q4",
+      "name": "Gemma 4 E4B",
+      "note_es": "La mejor calidad de la lista. Pide 16 GB de RAM.",
+      "note_en": "Best quality on this list. Needs 16 GB of RAM.",
+      "url": "https://huggingface.co/ggml-org/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_0.gguf",
+      "sha256": "a555b900214b477d8880e7832e0b8925e139b0159640036b09fe472b6f2097f2",
+      "size": 4590807392,
+      "min_ram_gb": 16
+    }
+  ]
+}

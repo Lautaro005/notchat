@@ -1,0 +1,10 @@
+{
+  "name": "notchat",
+  "private": true,
+  "scripts": {
+    "setup": "npm --prefix ui install",
+    "dev": "ui/node_modules/.bin/tauri dev",
+    "build": "ui/node_modules/.bin/tauri build",
+    "check": "cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && npm --prefix ui run check"
+  }
+}

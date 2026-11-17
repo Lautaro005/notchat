@@ -1,0 +1,10 @@
+target
+.DS_Store
+src-tauri/gen
+*.db
+*.db-wal
+*.db-shm
+.env
+node_modules/
+ui/dist/
+.claude/

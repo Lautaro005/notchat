@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write      # create the GitHub release
+      id-token: write      # sign build provenance
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: npm --prefix ui ci
+
+      - name: Import Developer ID certificate (when configured)
+        if: ${{ env.APPLE_CERTIFICATE != '' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          echo "$APPLE_CERTIFICATE" | base64 --decode > cert.p12
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          rm cert.p12
+
+      - name: Build universal app
+        env:
+          # Empty secrets fall back to the ad-hoc signature in tauri.conf.json.
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: ui/node_modules/.bin/tauri build --target universal-apple-darwin
+
+      - name: Package and checksum
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir dist
+          APP_DIR=target/universal-apple-darwin/release/bundle/macos
+          tar -czf "dist/Notchat_${VERSION}_universal.app.tar.gz" -C "$APP_DIR" Notchat.app
+          cp install.sh dist/
+          cargo install cargo-cyclonedx --locked
+          cargo cyclonedx --format json --override-filename sbom
+          cp src-tauri/sbom.json dist/notchat-sbom.cdx.json
+          (cd dist && shasum -a 256 * > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/*
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Notchat $GITHUB_REF_NAME" \
+            --notes-file CHANGELOG.md \
+            --verify-tag

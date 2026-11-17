@@ -1,0 +1,36 @@
+# cargo-deny: licenses, advisories, bans and sources.
+[graph]
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # fxhash is unmaintained but has no known vulnerability. It comes in through
+  # scraper -> selectors (HTML parsing for the assistant's web reader).
+  { id = "RUSTSEC-2025-0057", reason = "unmaintained only; transitive via scraper, no safe upgrade yet" },
+  # ttf-parser is unmaintained but has no known vulnerability. It comes in
+  # through pdf-extract -> lopdf (text extraction from attached PDFs).
+  { id = "RUSTSEC-2026-0192", reason = "unmaintained only; transitive via pdf-extract, no safe upgrade yet" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# The SQLCipher amalgamation carries SQLite's public-domain "blessing" and
+# libtomcrypt's WTFPL; both are permissive.
+exceptions = [{ crate = "sqlcipher-src", allow = ["blessing", "WTFPL"] }]
+allow = [
+  "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-2-Clause", "BSD-3-Clause",
+  "ISC", "Zlib", "Unicode-3.0", "MPL-2.0", "CC0-1.0", "BSL-1.0",
+  "0BSD", "CDLA-Permissive-2.0", "Unlicense",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
