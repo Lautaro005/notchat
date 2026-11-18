@@ -10,6 +10,10 @@ updates:
     schedule: { interval: weekly }
     groups:
       ui: { patterns: ["*"] }
+    ignore:
+      # svelte-check supports TypeScript 5 and 6 only. Remove once it supports 7.
+      - dependency-name: typescript
+        versions: [">=7"]
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: weekly }
