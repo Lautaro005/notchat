@@ -44,6 +44,8 @@ Then open Notchat, go to **WhatsApp → Settings → Linked devices → Link a d
 | **Notchat AI** | Your own assistant chat. It reads your chats, searches the web, reads files you attach and sends messages for you: *"tell Ana I'm running late"*. You confirm before anything is sent. |
 | **Auto-reply** | Let the AI answer all chats, selected ones, or none — separately for chats and groups, with per-chat instructions, hourly limits, quiet hours and a kill switch in the menu bar. |
 | **Bring your own model** | Uses what you already have — Ollama, LM Studio or llama.cpp. Nothing installed? One click downloads llama.cpp and a lightweight model (Gemma 4, Qwen3.5) and runs it locally. |
+| **The full chat app** | Your chats, groups and history from your phone, with profile pictures. Photos, videos, voice notes (record and play), documents, drag-and-drop and emoji. Pin, mute, archive, mark unread, export and clear chats from a right-click menu. |
+| **Your own lists** | Group chats into lists like *Work* or *Family* and filter by them, next to *Unread* and *Groups*. Resize the chat list to taste. |
 | **Light by design** | Native Rust core, system webview, a ~90 KB interface bundle. Runs quietly in the menu bar. |
 | **Bilingual** | Spanish and English, following your system language. |
 
@@ -52,7 +54,8 @@ Then open Notchat, go to **WhatsApp → Settings → Linked devices → Link a d
 - **Everything stays on your Mac.** No Notchat servers, accounts or telemetry. The AI runs on `localhost`; remote AI endpoints are refused.
 - **Encrypted at rest** with SQLCipher (AES-256); the key lives in your Keychain.
 - **Prompt-injection aware.** Auto-replies see only the chat they answer and have no tools. The assistant always asks before sending once it has read chats or web pages.
-- **Verified downloads.** llama.cpp and models are pinned by SHA-256.
+- **Verified downloads.** llama.cpp and models are pinned by SHA-256; updates are checked against the release's published SHA-256 before installing.
+- **Updates on your terms.** Notchat checks GitHub for a new version at launch and every three hours; turn it off in Settings → Updates.
 - **Audited supply chain.** `cargo audit`, `cargo deny`, CodeQL, SBOM and signed build provenance for every release.
 
 Read the [security policy](SECURITY.md), the [threat model](docs/security/threat-model.md) and the [ISO 27001 / OWASP ASVS controls mapping](docs/security/controls.md). Notchat is aligned with those frameworks — it is software, so it is not itself certified.

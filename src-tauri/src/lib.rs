@@ -1,5 +1,6 @@
 mod assistant;
 mod autoreply;
+mod chats;
 mod commands;
 mod logger;
 mod managed;
@@ -9,6 +10,7 @@ mod session;
 mod state;
 mod sysnotify;
 mod tray;
+mod updater;
 
 use notchat_core::keychain;
 use notchat_core::store::Store;
@@ -51,7 +53,6 @@ fn init_state(app: &tauri::App) -> Result<AppState, Box<dyn std::error::Error>> 
     Ok(AppState {
         store,
         key,
-        data_dir,
         session: tokio::sync::Mutex::new(None),
         status: Mutex::new(Status::default()),
         rate: Mutex::default(),
@@ -59,6 +60,11 @@ fn init_state(app: &tauri::App) -> Result<AppState, Box<dyn std::error::Error>> 
         ai_task: Mutex::new(None),
         managed: tokio::sync::Mutex::new(None),
         managed_busy: Default::default(),
+        media: notchat_core::media::MediaCache::new(&data_dir),
+        avatars: notchat_core::media::AvatarCache::new(&data_dir),
+        avatar_slots: tokio::sync::Semaphore::new(4),
+        update_busy: Default::default(),
+        data_dir,
     })
 }
 
@@ -85,6 +91,7 @@ pub fn run() {
                 app.handle().clone(),
                 app.state::<Arc<AppState>>().inner().clone(),
             ));
+            tauri::async_runtime::spawn(updater::background(app.handle().clone()));
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(e) = session::start(handle.clone(), None).await {
@@ -139,6 +146,34 @@ pub fn run() {
             commands::enable_system_notifications,
             commands::managed_view,
             commands::managed_install,
+            chats::chat_archive,
+            chats::chat_pin,
+            chats::chat_mute,
+            chats::chat_mark_unread,
+            chats::chat_clear,
+            chats::chat_delete,
+            chats::chat_export,
+            chats::group_leave,
+            chats::group_info,
+            chats::set_typing,
+            chats::avatar,
+            chats::media,
+            chats::save_media,
+            chats::send_media,
+            chats::list_lists,
+            chats::create_list,
+            chats::rename_list,
+            chats::delete_list,
+            chats::set_list_member,
+            chats::storage_info,
+            chats::storage_clear_media,
+            chats::storage_clear_avatars,
+            chats::storage_delete_older,
+            updater::get_update_auto,
+            updater::set_update_auto,
+            updater::check_update,
+            updater::install_update,
+            updater::app_version,
         ])
         .build(tauri::generate_context!());
     match result {

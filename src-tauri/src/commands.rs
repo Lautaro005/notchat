@@ -15,7 +15,7 @@ use tauri::{AppHandle, Emitter, State};
 
 type St<'a> = State<'a, Arc<AppState>>;
 
-fn check_jid(jid: &str) -> Result<()> {
+pub fn check_jid(jid: &str) -> Result<()> {
     let ok = jid.len() <= 128
         && jid.contains('@')
         && jid
@@ -375,6 +375,7 @@ pub fn notch_test(app: AppHandle, state: St<'_>, title: String, text: String) {
         kind: "text".into(),
         text: text.chars().take(200).collect(),
         by_ai: false,
+        ..Default::default()
     };
     crate::notify::deliver(&app, state.inner(), &sample, false, true);
 }

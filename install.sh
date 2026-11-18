@@ -62,7 +62,7 @@ else
   ASSET="Notchat_${VERSION#v}_universal.app.tar.gz"
   BASE="https://github.com/$REPO/releases/download/$VERSION"
 
-  say "Downloading Notchat $VERSION…"
+  say "Downloading Notchat ${VERSION}…"
   curl -fL --progress-bar -o "$TMP/$ASSET" "$BASE/$ASSET"
   curl -fsSL -o "$TMP/SHA256SUMS" "$BASE/SHA256SUMS"
 

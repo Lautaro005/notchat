@@ -1,53 +1,93 @@
 :root {
-  --bg: #fbfaf8;
-  --bg-2: #f1efeb;
-  --bg-3: #e7e4de;
-  --line: #dedad3;
+  --bg: #fdfcfa;
+  --bg-2: #eeebe5;
+  --bg-3: #e3dfd7;
+  --line: #d9d4ca;
+  --line-soft: #e8e4dc;
   --text: #17150f;
-  --text-2: #5d594f;
+  --text-2: #5a564c;
   --text-3: #6b665c;
-  --ink: #111110;
+  --ink: #141311;
   --on-ink: #fbfaf8;
-  --bubble: #ebe8e2;
+  --bubble: #ffffff;
+  --bubble-line: #e6e2da;
+  --wall-dot: rgb(60 50 30 / 0.07);
   --accent: #c9460f;
   --accent-soft: #fbe6da;
   --on-accent: #ffffff;
   --danger: #b3261e;
-  --shadow: 0 12px 32px -12px rgb(40 30 10 / 0.28), 0 2px 6px rgb(40 30 10 / 0.08);
+  --scrim: rgb(25 20 10 / 0.28);
+  --shadow: 0 18px 48px -18px rgb(40 30 10 / 0.32), 0 3px 10px rgb(40 30 10 / 0.08);
+  --shadow-s: 0 1px 2px rgb(40 30 10 / 0.08), 0 6px 18px -10px rgb(40 30 10 / 0.18);
+  --panel: #fdfcfa;
 
   --r-s: 6px;
   --r-m: 10px;
   --r-l: 18px;
   --r-xl: 22px;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --rounded: ui-rounded, -apple-system, BlinkMacSystemFont, sans-serif;
 
   font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
   font-size: 13px;
   line-height: 1.4;
   color: var(--text);
-  background: var(--bg);
+  background: var(--bg-2);
+  color-scheme: light;
   -webkit-font-smoothing: antialiased;
   font-synthesis: none;
 }
 
+/* Dark tokens: followed from the system unless the user picked a theme. */
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #151513;
-    --bg-2: #1d1c1a;
-    --bg-3: #292825;
-    --line: #33312d;
+  :root:not([data-theme="light"]) {
+    --bg: #1b1a18;
+    --bg-2: #121210;
+    --bg-3: #272623;
+    --line: #34322e;
+    --line-soft: #2a2926;
     --text: #f3f1ec;
     --text-2: #b3aea3;
-    --text-3: #918c81;
+    --text-3: #958f84;
     --ink: #f3f1ec;
     --on-ink: #151513;
-    --bubble: #2a2926;
+    --bubble: #262522;
+    --bubble-line: #302e2a;
+    --wall-dot: rgb(255 245 225 / 0.045);
     --accent: #ff7a3d;
     --accent-soft: #3a2216;
     --on-accent: #1a0d05;
     --danger: #ff8a80;
-    --shadow: 0 12px 32px -12px rgb(0 0 0 / 0.7), 0 2px 6px rgb(0 0 0 / 0.4);
+    --scrim: rgb(0 0 0 / 0.5);
+    --shadow: 0 18px 48px -18px rgb(0 0 0 / 0.8), 0 3px 10px rgb(0 0 0 / 0.4);
+    --shadow-s: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 18px -10px rgb(0 0 0 / 0.6);
+    --panel: #201f1c;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #1b1a18;
+  --bg-2: #121210;
+  --bg-3: #272623;
+  --line: #34322e;
+  --line-soft: #2a2926;
+  --text: #f3f1ec;
+  --text-2: #b3aea3;
+  --text-3: #958f84;
+  --ink: #f3f1ec;
+  --on-ink: #151513;
+  --bubble: #262522;
+  --bubble-line: #302e2a;
+  --wall-dot: rgb(255 245 225 / 0.045);
+  --accent: #ff7a3d;
+  --accent-soft: #3a2216;
+  --on-accent: #1a0d05;
+  --danger: #ff8a80;
+  --scrim: rgb(0 0 0 / 0.5);
+  --shadow: 0 18px 48px -18px rgb(0 0 0 / 0.8), 0 3px 10px rgb(0 0 0 / 0.4);
+  --shadow-s: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 18px -10px rgb(0 0 0 / 0.6);
+  --panel: #201f1c;
+  color-scheme: dark;
 }
 
 * {
@@ -104,7 +144,25 @@ input {
 .scroll {
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--bg-3) transparent;
+  scrollbar-color: var(--line) transparent;
+}
+
+.btn.danger {
+  background: var(--danger);
+  color: var(--bg);
+}
+.btn.danger:hover:not(:disabled) {
+  background: var(--danger);
+  opacity: 0.9;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .btn {

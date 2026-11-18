@@ -2708,10 +2708,11 @@ dependencies = [
 
 [[package]]
 name = "notchat"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.23.1",
  "block2",
+ "chrono",
  "libc",
  "log",
  "notchat-core",
@@ -2728,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "notchat-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.23.1",
  "chrono",

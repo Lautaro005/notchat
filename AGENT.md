@@ -50,7 +50,7 @@ Regla: la lógica va en `crates/core`; `src-tauri` sólo conecta. Nada de lógic
 
 ## Reglas de seguridad (obligatorias)
 
-1. **Todo local.** Sin telemetría, sin analytics, sin servidores propios. La única red permitida: WhatsApp, el proveedor de IA en `localhost`, y web cuando el usuario lo pide en el chat propio.
+1. **Todo local.** Sin telemetría, sin analytics, sin servidores propios. La única red permitida: WhatsApp (incluido su CDN de fotos de perfil y archivos), el proveedor de IA en `localhost`, web cuando el usuario lo pide en el chat propio, y GitHub para buscar e instalar actualizaciones (interruptor en Ajustes, prendido por defecto; decidido por el usuario en 0.1.2).
 2. **Mensajes entrantes = datos no confiables.** En auto-respuesta la IA sólo ve ese chat y **no tiene herramientas**: ni internet, ni otros chats, ni envío a terceros. Las herramientas sólo existen en el chat "Notchat AI".
 3. **Secretos en Keychain**, nunca en archivos, logs ni en el frontend. La DB va cifrada con SQLCipher; archivos con permisos 0600.
 4. **Nunca loguear** contenido de mensajes, números, ni claves. Los logs llevan ids y conteos.
@@ -103,6 +103,9 @@ npm --prefix ui run check
 - Catálogo de modelos y build de `llama-server`: `models.json` (se embebe al compilar). Para actualizar, tomar `digest`/`lfs.oid` de la API de GitHub/Hugging Face; nunca inventar hashes. Test real de descarga: `cargo test -p notchat-core -- --ignored`.
 - Notificaciones del sistema solo funcionan desde el `.app` empaquetado (necesitan bundle id); en `npm run dev` se usa el notch.
 - El proceso fija `umask 077`: todo archivo nuevo queda `0600`.
+- Historial: `skip_history_sync` ya no se usa; los chats, grupos y mensajes del teléfono se importan en `wa::import_history`. Los contactos van a la tabla `contacts` y no crean chats; la lista solo muestra chats con `last_ts > 0` o fijados.
+- Archivos y fotos de perfil: claves de descarga en la columna `messages.media`; los bytes descargados en `media/` y `avatars/` con nombres hasheados (`crates/core/src/media.rs`).
+- Actualizaciones: `crates/core/src/update.rs` (verifica `SHA256SUMS` del release) y `src-tauri/src/updater.rs` (reemplaza el `.app` al salir).
 
 ## Acciones que requieren confirmación del usuario
 

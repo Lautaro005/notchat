@@ -44,6 +44,8 @@ Después abrí Notchat y en el teléfono andá a **WhatsApp → Ajustes → Disp
 | **Notchat AI** | Un chat propio con tu asistente. Lee tus chats, busca en internet, lee los archivos que adjuntás y manda mensajes por vos: *"decile a Ana que llego tarde"*. Siempre confirmás antes de que se envíe. |
 | **Respuesta automática** | La IA puede contestar todos los chats, los que elijas o ninguno, por separado para chats y grupos, con instrucciones por chat, límite por hora, horario de silencio y un botón de pausa en la barra de menú. |
 | **Usá tu propio modelo** | Funciona con lo que ya tengas: Ollama, LM Studio o llama.cpp. ¿No tenés nada? Con un botón descarga llama.cpp y un modelo liviano (Gemma 4, Qwen3.5) y lo corre en tu Mac. |
+| **La app de chat completa** | Tus chats, grupos e historial del teléfono, con fotos de perfil. Fotos, videos, audios (grabar y escuchar), documentos, arrastrar y soltar y emoji. Fijá, silenciá, archivá, marcá como no leído, exportá y vaciá chats desde el clic derecho. |
+| **Tus propias listas** | Agrupá chats en listas como *Trabajo* o *Familia* y filtrá por ellas, junto a *No leídos* y *Grupos*. La lista de chats se puede ensanchar a gusto. |
 | **Liviano** | Núcleo nativo en Rust, webview del sistema e interfaz de ~90 KB. Corre en segundo plano desde la barra de menú. |
 | **Bilingüe** | Español e inglés, según el idioma del sistema. |
 
@@ -52,7 +54,8 @@ Después abrí Notchat y en el teléfono andá a **WhatsApp → Ajustes → Disp
 - **Todo queda en tu Mac.** Sin servidores de Notchat, sin cuentas, sin telemetría. La IA corre en `localhost`; los endpoints remotos se rechazan.
 - **Cifrado en disco** con SQLCipher (AES-256); la clave vive en tu Llavero.
 - **Protegida contra prompt injection.** La respuesta automática solo ve el chat que contesta y no tiene herramientas. El asistente siempre pregunta antes de enviar si leyó chats o páginas web.
-- **Descargas verificadas.** llama.cpp y los modelos están fijados por SHA-256.
+- **Descargas verificadas.** llama.cpp y los modelos están fijados por SHA-256; las actualizaciones se comparan con el SHA-256 publicado antes de instalarse.
+- **Actualizaciones a tu manera.** Notchat busca una versión nueva en GitHub al abrir y cada tres horas; se apaga en Ajustes → Actualizaciones.
 - **Cadena de suministro auditada.** `cargo audit`, `cargo deny`, CodeQL, SBOM y procedencia firmada en cada versión.
 
 Leé la [política de seguridad](SECURITY.md), el [modelo de amenazas](docs/security/threat-model.md) y el [mapeo de controles ISO 27001 / OWASP ASVS](docs/security/controls.md). Notchat está alineado con esos marcos; al ser software, no está certificado en sí mismo.

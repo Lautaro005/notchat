@@ -41,6 +41,12 @@ pub struct AppState {
     /// Notchat's own llama.cpp server, when running.
     pub managed: tokio::sync::Mutex<Option<notchat_core::managed::Server>>,
     pub managed_busy: std::sync::atomic::AtomicBool,
+    pub media: notchat_core::media::MediaCache,
+    pub avatars: notchat_core::media::AvatarCache,
+    /// Limits concurrent profile-picture lookups.
+    pub avatar_slots: tokio::sync::Semaphore,
+    /// A downloaded, verified update waiting to be installed.
+    pub update_busy: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {

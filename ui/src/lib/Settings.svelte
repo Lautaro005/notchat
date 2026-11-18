@@ -5,8 +5,10 @@
   import Segmented from "./Segmented.svelte";
   import Switch from "./Switch.svelte";
   import { api, type Mode, type NotifyMode, type Provider } from "./api";
-  import { aiReady, app, saveAiConfig, saveAutoReply } from "./app.svelte";
-  import { locale, t } from "./i18n";
+  import Storage from "./Storage.svelte";
+  import Updates from "./Updates.svelte";
+  import { aiReady, app, applyTheme, saveAiConfig, saveAutoReply, type Theme } from "./app.svelte";
+  import { locale, t, type Key } from "./i18n";
 
   let providers = $state<Provider[]>([]);
   let scanning = $state(true);
@@ -49,6 +51,9 @@
     await scan();
   });
 
+  let windowEl: HTMLElement | undefined = $state();
+  onMount(() => windowEl?.focus());
+
   function pick(p: Provider, model: string) {
     void saveAiConfig({ provider: p.kind, base_url: p.base_url, model });
   }
@@ -59,21 +64,69 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") app.settingsOpen = false;
+    if (e.key === "Escape" && !app.confirm && !app.menu) app.settingsOpen = false;
   }
+
+  const sections = [
+    { id: "general", icon: "palette", label: "set.general" },
+    { id: "ai", icon: "spark", label: "set.ai" },
+    { id: "auto", icon: "send", label: "set.auto" },
+    { id: "storage", icon: "disk", label: "set.storage" },
+    { id: "updates", icon: "refresh", label: "set.updates" },
+    { id: "account", icon: "shield", label: "set.account" },
+  ] as const;
+
+  const themes: { value: Theme; label: string }[] = [
+    { value: "system", label: t("theme.system") },
+    { value: "light", label: t("theme.light") },
+    { value: "dark", label: t("theme.dark") },
+  ];
+
+  const current = $derived(sections.find((s) => s.id === app.settingsSection) ?? sections[0]);
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<aside class="sheet" aria-label={t("set.title")}>
-  <header data-tauri-drag-region>
-    <h1>{t("set.title")}</h1>
-    <button class="icon-btn" onclick={() => (app.settingsOpen = false)} aria-label={t("set.close")}>
-      <Icon name="close" size={18} />
-    </button>
-  </header>
-
-  <div class="body scroll">
+<div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (app.settingsOpen = false)}>
+  <div class="window" role="dialog" aria-modal="true" aria-label={t("set.title")} tabindex="-1" bind:this={windowEl}>
+    <nav aria-label={t("set.title")}>
+      <h1>{t("set.title")}</h1>
+      {#each sections as s (s.id)}
+        <button aria-current={s.id === current.id ? "page" : undefined} onclick={() => (app.settingsSection = s.id)}>
+          <Icon name={s.icon} size={16} />{t(s.label as Key)}
+        </button>
+      {/each}
+    </nav>
+    <div class="content">
+      <header>
+        <h2 class="title">{t(current.label as Key)}</h2>
+        <button class="icon-btn" onclick={() => (app.settingsOpen = false)} aria-label={t("set.close")}>
+          <Icon name="close" size={18} />
+        </button>
+      </header>
+      <div class="body scroll">
+        {#if current.id === "general"}
+    <section>
+      <h2>{t("set.appearance")}</h2>
+      <div class="field wide">
+        <span>{t("set.theme")}</span>
+        <Segmented label={t("set.theme")} value={app.theme} options={themes} onchange={(v) => applyTheme(v)} />
+      </div>
+    </section>
+    <section>
+      <div class="head">
+        <h2>{t("set.notify")}</h2>
+        {#if notify !== "off"}
+          <button class="btn quiet small" onclick={() => api.notchTest(t("set.notifyTestTitle"), t("set.notifyTestBody"))}>
+            {t("set.notifyTest")}
+          </button>
+        {/if}
+      </div>
+      <p class="hint">{t("set.notifyHint")}</p>
+      <Segmented label={t("set.notify")} value={notify} options={notifyModes} onchange={setNotify} />
+      {#if systemUnavailable}<p class="hint">{t("set.notifyUnavailable")}</p>{/if}
+    </section>
+        {:else if current.id === "ai"}
     <section>
       <div class="head">
         <h2>{t("set.model")}</h2>
@@ -112,7 +165,6 @@
       </ul>
       <Managed onchange={scan} />
     </section>
-
     <section>
       <h2>{t("set.assistant")}</h2>
       <label class="line">
@@ -124,7 +176,7 @@
         <Switch checked={app.ai.config.confirm_send} label={t("set.confirm")} onchange={(v) => saveAiConfig({ confirm_send: v })} />
       </label>
     </section>
-
+        {:else if current.id === "auto"}
     <section>
       <h2>{t("set.auto")}</h2>
       <label class="line">
@@ -188,21 +240,11 @@
         </label>
       </div>
     </section>
-
-    <section>
-      <div class="head">
-        <h2>{t("set.notify")}</h2>
-        {#if notify !== "off"}
-          <button class="btn quiet small" onclick={() => api.notchTest(t("set.notifyTestTitle"), t("set.notifyTestBody"))}>
-            {t("set.notifyTest")}
-          </button>
-        {/if}
-      </div>
-      <p class="hint">{t("set.notifyHint")}</p>
-      <Segmented label={t("set.notify")} value={notify} options={notifyModes} onchange={setNotify} />
-      {#if systemUnavailable}<p class="hint">{t("set.notifyUnavailable")}</p>{/if}
-    </section>
-
+        {:else if current.id === "storage"}
+          <Storage />
+        {:else if current.id === "updates"}
+          <Updates />
+        {:else}
     <section>
       <h2>{t("set.account")}</h2>
       {#if confirmUnlink}
@@ -221,51 +263,120 @@
         <button class="btn" onclick={() => (confirmUnlink = true)}>{t("set.unlink")}</button>
       {/if}
     </section>
+          <p class="hint">{t("set.privacy")}</p>
+        {/if}
+      </div>
+    </div>
   </div>
-</aside>
+</div>
 
 <style>
-  .sheet {
-    width: 340px;
-    flex: none;
-    display: flex;
-    flex-direction: column;
-    min-height: 0;
-    background: var(--bg-2);
-    border-left: 1px solid var(--line);
-    animation: slide 220ms var(--ease);
+  .scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: var(--scrim);
+    animation: fade 180ms var(--ease);
   }
-  @keyframes slide {
+  @keyframes fade {
     from {
-      transform: translateX(24px);
       opacity: 0;
     }
   }
+  .window:focus {
+    outline: none;
+  }
+  .window {
+    width: min(760px, 100%);
+    height: min(560px, 100%);
+    display: flex;
+    overflow: hidden;
+    border-radius: 18px;
+    background: var(--panel);
+    box-shadow: var(--shadow), 0 0 0 0.5px var(--line);
+    animation: rise 240ms var(--ease);
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(12px) scale(0.985);
+    }
+  }
+  nav {
+    width: 200px;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 18px 10px;
+    background: var(--bg-2);
+  }
+  nav h1 {
+    margin: 0 10px 14px;
+    font-family: var(--rounded);
+    font-size: 19px;
+    font-weight: 700;
+  }
+  nav button {
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 0 10px;
+    border-radius: 8px;
+    font-weight: 500;
+    color: var(--text-2);
+    text-align: left;
+  }
+  nav button:hover {
+    background: var(--bg-3);
+    color: var(--text);
+  }
+  nav button[aria-current="page"] {
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: var(--shadow-s);
+  }
+  nav button[aria-current="page"] :global(svg) {
+    color: var(--accent);
+  }
+  .content {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+  }
   header {
     flex: none;
-    height: 52px;
+    height: 56px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 10px 0 20px;
+    padding: 0 12px 0 28px;
   }
-  h1 {
+  .title {
     margin: 0;
     font-size: 15px;
     font-weight: 600;
-    pointer-events: none;
   }
   .body {
     flex: 1;
     min-height: 0;
-    padding: 0 20px 24px;
+    padding: 0 28px 28px;
   }
   section {
-    padding: 20px 0 4px;
+    padding: 8px 0 4px;
   }
   section + section {
-    margin-top: 16px;
-    border-top: 1px solid var(--line);
+    margin-top: 18px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line-soft);
+  }
+  .field.wide {
+    grid-template-columns: 1fr auto;
   }
   h2 {
     margin: 0 0 10px;
@@ -440,9 +551,5 @@
   .acts {
     display: flex;
     gap: 6px;
-  }
-  .btn.danger {
-    background: var(--danger);
-    color: var(--bg);
   }
 </style>

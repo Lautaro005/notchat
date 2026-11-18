@@ -25,4 +25,5 @@ block2 = "0.6"
 objc2-foundation = "0.3"
 objc2-user-notifications = { version = "0.3", features = ["block2"] }
 base64 = "0.23"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tauri-nspanel = "2.1.1"

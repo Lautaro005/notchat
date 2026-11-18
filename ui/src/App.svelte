@@ -5,6 +5,7 @@
   import Sidebar from "./lib/Sidebar.svelte";
   import Assistant from "./lib/Assistant.svelte";
   import Settings from "./lib/Settings.svelte";
+  import Overlays from "./lib/Overlays.svelte";
   import { AI, app, init } from "./lib/app.svelte";
 
   let ready = $state(false);
@@ -27,22 +28,33 @@
     <div class="shell">
       <Sidebar />
       {#if app.selected === AI}
-        <Assistant />
+        <div class="card"><Assistant /></div>
       {:else}
         <Conversation />
       {/if}
-      {#if app.settingsOpen}
-        <Settings />
-      {/if}
     </div>
+    {#if app.settingsOpen}
+      <Settings />
+    {/if}
   {:else}
     <Pairing />
   {/if}
+  <Overlays />
 {/if}
 
 <style>
   .shell {
     height: 100%;
     display: flex;
+    background: var(--bg-2);
+  }
+  .card {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    margin: 8px 8px 8px 0;
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: var(--shadow-s), 0 0 0 0.5px var(--line);
   }
 </style>

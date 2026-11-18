@@ -7,9 +7,11 @@ pub mod attach;
 pub mod error;
 pub mod keychain;
 pub mod managed;
+pub mod media;
 pub mod net;
 pub mod policy;
 pub mod store;
+pub mod update;
 pub mod wa;
 
 pub use error::{Error, Result};

@@ -10,6 +10,7 @@ a trust boundary.
 | WhatsApp session keys (Signal identity, sessions, pre-keys) | `session.db` (SQLCipher) |
 | Messages, contacts, chat names | `notchat.db` (SQLCipher) |
 | Assistant conversation and attachments' extracted text | `notchat.db` |
+| Downloaded media and profile pictures | `media/`, `avatars/` (files `0600`, hashed names, not encrypted) |
 | Database key | macOS Keychain, item `app.notchat.desktop / db-key-v1` |
 | Settings (AI provider, auto-reply rules) | `notchat.db` |
 
@@ -24,6 +25,8 @@ All files live in `~/Library/Application Support/app.notchat.desktop/` (`0700`).
         (Ollama / LM Studio / llama.cpp)
                                    │
                     github.com / huggingface.co (downloads you start, SHA-256 pinned)
+                                   │
+                    api.github.com / github.com (update checks, optional, SHA-256 verified)
 ```
 
 1. **WhatsApp ↔ core** — end-to-end encrypted protocol handled by `whatsapp-rust`.
@@ -31,6 +34,8 @@ All files live in `~/Library/Application Support/app.notchat.desktop/` (`0700`).
 3. **Core ↔ AI provider** — HTTP on loopback only; remote endpoints are refused.
 4. **Core ↔ web** — only when the user asks the assistant; public addresses only.
 5. **Core ↔ download hosts** — pinned URLs and hashes in `models.json`.
+6. **Core ↔ GitHub Releases** — update checks at launch and every 3 hours (user toggle, on by default). An update installs only after the user clicks *Install* and its SHA-256 matches the release's `SHA256SUMS`.
+7. **Core ↔ WhatsApp CDN** — media and profile pictures. Picture URLs must be `https://*.whatsapp.net`; redirects are not followed.
 
 ## Threats and mitigations
 
@@ -48,6 +53,9 @@ All files live in `~/Library/Application Support/app.notchat.desktop/` (`0700`).
 | T10 | Denial of service | Message floods trigger runaway AI replies | Per-chat hourly cap, one pending reply per chat, quiet hours, global kill switch in the menu bar |
 | T11 | Repudiation | User cannot tell what the AI sent | AI-sent messages are flagged and marked in the conversation; assistant actions are kept in its history |
 | T12 | Tampering | Compromised release artifact | Checksums published per release, installer verifies them, build provenance attestation, SBOM |
+| T14 | Information disclosure | Downloaded photos and files read from disk | Owner-only `0600` files in a `0700` folder, names are hashes (no numbers or chat ids); can be cleared from Settings → Storage |
+| T15 | Tampering | Malicious update | HTTPS only, release tag must be newer, archive SHA-256 checked against the published `SHA256SUMS` before unpacking; bundle swap runs with paths passed as arguments |
+| T16 | Information disclosure | Media rendered as active content in the webview | Only `image/`, `video/` and `audio/` types are handed to the webview, as `data:` URLs in media elements; CSP `media-src` limited to `self`, `data:` and `blob:` |
 | T13 | Account risk | WhatsApp restricts the number | Clear warning at pairing and before enabling auto-reply; conservative defaults |
 
 ## Residual risks
@@ -55,4 +63,5 @@ All files live in `~/Library/Application Support/app.notchat.desktop/` (`0700`).
 - Notchat is an **unofficial client**; protocol changes can break it and WhatsApp may act against accounts using it.
 - Local models are weaker at resisting prompt injection than large hosted models. The tool-less auto-reply design limits impact to the reply text itself.
 - Until releases are signed with an Apple Developer ID and notarized, users must trust the GitHub release and checksum rather than Gatekeeper.
+- Downloaded media is stored unencrypted (permissions only), so another process running as the same user can read it.
 - A malicious process running as the same user with Keychain access can read data. This is outside what an app can defend against.

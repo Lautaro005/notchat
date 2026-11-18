@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.2 — 2026-11-18
+
+A much fuller chat app, with a new look.
+
+- **History, groups and photos.** Linking now imports your chats, groups and recent history from the phone, including archived, pinned and muted state. Every group you belong to shows up, contacts no longer fill the list as empty chats, and profile pictures load (cached for a day).
+- **Media.** See photos, stickers and videos, play and record voice notes, open documents (saved to Downloads), and send photos, videos and files from the attach button, by pasting or by drag-and-drop. Emoji picker in the composer.
+- **Right-click menu** on every chat: archive, pin (up to 3), mute for 8 hours / 1 week / always, mark as read or unread, add to a list, chat or group info, export as text, clear, exit group and delete. Destructive actions ask first. Changes sync to your phone.
+- **Lists and filters.** Filter by All, Unread and Groups, or make your own lists (Work, Family…) and filter by them. Archived chats have their own view.
+- **Chat and group info panel** with participants, description and quick actions.
+- **Settings window** with sections: General (theme, notifications), AI, Auto-reply, Storage, Updates and Account.
+- **Storage.** See what Notchat keeps on this Mac, per chat, and clear downloaded files, profile pictures or old messages.
+- **Updates.** Notchat checks GitHub at launch and every three hours (can be turned off), and installs a new version in one click after verifying its SHA-256.
+- **New design.** Resizable chat list, floating conversation card, light / dark / system theme switch next to Settings, coloured names in groups, dotted chat wallpaper.
+- Muted chats no longer send notifications.
+- Fixed: the one-line installer failed with `VERSION: unbound variable` in some shells.
+
+
 ## 0.1.1 — 2026-11-18
 
 Maintenance release: updated dependencies and a hardened build pipeline. No feature changes.

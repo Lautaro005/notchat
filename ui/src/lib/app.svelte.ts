@@ -1,5 +1,56 @@
-import { api, on, type AiConfig, type AiRow, type AutoReply, type Chat, type Message, type Status } from "./api";
+import {
+  api,
+  on,
+  type AiConfig,
+  type AiRow,
+  type AutoReply,
+  type Chat,
+  type ChatList,
+  type Message,
+  type Release,
+  type SendKind,
+  type Status,
+} from "./api";
 import { locale } from "./i18n";
+
+export type Theme = "system" | "light" | "dark";
+
+export interface MenuItem {
+  label?: string;
+  icon?: string;
+  danger?: boolean;
+  checked?: boolean;
+  disabled?: boolean;
+  separator?: boolean;
+  action?: () => void;
+  children?: MenuItem[];
+}
+
+export function openMenu(e: MouseEvent | { x: number; y: number }, items: MenuItem[]) {
+  if ("preventDefault" in e) e.preventDefault();
+  const x = "clientX" in e ? e.clientX : e.x;
+  const y = "clientY" in e ? e.clientY : e.y;
+  app.menu = { x, y, items };
+}
+/** "all", "unread", "groups" or "list:<id>". */
+export type Filter = string;
+
+function stored<T>(key: string, fallback: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw === null ? fallback : (JSON.parse(raw) as T);
+  } catch {
+    return fallback;
+  }
+}
+
+export function remember(key: string, value: unknown) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Preferences are a convenience; private mode just forgets them.
+  }
+}
 
 /** Id used in `app.selected` for the assistant conversation. */
 export const AI = "ai";
@@ -16,6 +67,33 @@ export const app = $state({
   /** Id of the message that just arrived live; only that one animates in. */
   fresh: null as string | null,
   settingsOpen: false,
+  settingsSection: "general" as string,
+  infoOpen: false,
+  lists: [] as ChatList[],
+  filter: "all" as Filter,
+  archived: false,
+  theme: stored<Theme>("theme", "system"),
+  sidebarWidth: stored<number>("sidebarWidth", 320),
+  /** Profile pictures by chat: a data URL, null when there is none. */
+  avatars: {} as Record<string, string | null>,
+  update: null as Release | null,
+  history: null as number | null,
+  toast: null as { text: string; id: number } | null,
+  confirm: null as null | {
+    title: string;
+    body: string;
+    action: string;
+    danger: boolean;
+    resolve: (ok: boolean) => void;
+  },
+  prompt: null as null | {
+    title: string;
+    placeholder: string;
+    value: string;
+    action: string;
+    resolve: (value: string | null) => void;
+  },
+  menu: null as null | { x: number; y: number; items: MenuItem[] },
   ai: {
     config: { provider: null, base_url: "", model: "", confirm_send: true, web_access: true } as AiConfig,
     rows: [] as AiRow[],
@@ -44,11 +122,81 @@ export function chatTitle(chat: { jid: string; name: string }): string {
   return /^\d{7,15}$/.test(user) && chat.jid.endsWith("@s.whatsapp.net") ? `+${user}` : user;
 }
 
-async function refreshChats() {
-  app.chats = await api.chats();
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Coalesces bursts of updates (history import) into one reload. */
+function refreshChats() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(async () => {
+    app.chats = await api.chats();
+  }, 120);
+}
+
+async function refreshLists() {
+  app.lists = await api.lists();
+}
+
+export function isMuted(chat: Chat): boolean {
+  return chat.muted_until < 0 || chat.muted_until > Date.now() / 1000;
+}
+
+export function isUnread(chat: Chat): boolean {
+  return chat.unread > 0 || chat.marked_unread;
+}
+
+const loadingAvatars = new Set<string>();
+
+/** Returns the cached picture and fetches it in the background the first time. */
+export function avatarFor(jid: string): string | null {
+  if (jid in app.avatars) return app.avatars[jid];
+  if (!loadingAvatars.has(jid) && jid.includes("@")) {
+    loadingAvatars.add(jid);
+    api
+      .avatar(jid)
+      .then((url) => (app.avatars[jid] = url))
+      .catch(() => (app.avatars[jid] = null))
+      .finally(() => loadingAvatars.delete(jid));
+  }
+  return null;
+}
+
+export function applyTheme(theme: Theme) {
+  app.theme = theme;
+  remember("theme", theme);
+  if (theme === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+}
+
+let toastSeq = 0;
+export function toast(text: string) {
+  const id = ++toastSeq;
+  app.toast = { text, id };
+  setTimeout(() => {
+    if (app.toast?.id === id) app.toast = null;
+  }, 3200);
+}
+
+/** Asks the user to confirm a destructive action. */
+export function confirmAction(opts: { title: string; body: string; action: string; danger?: boolean }): Promise<boolean> {
+  return new Promise((resolve) => {
+    app.confirm = { ...opts, danger: opts.danger ?? true, resolve };
+  });
+}
+
+/** Asks for a short piece of text (a list name). */
+export function askText(opts: { title: string; placeholder: string; value?: string; action: string }): Promise<string | null> {
+  return new Promise((resolve) => {
+    app.prompt = { ...opts, value: opts.value ?? "", resolve };
+  });
+}
+
+export function openSettings(section = "general") {
+  app.settingsSection = section;
+  app.settingsOpen = true;
 }
 
 export async function selectChat(jid: string) {
+  if (app.selected !== jid) app.infoOpen = false;
   app.selected = jid;
   app.messages = [];
   if (jid === AI) return;
@@ -89,6 +237,43 @@ export async function send(text: string) {
   append(await api.sendText(jid, text));
 }
 
+function readBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+export const MAX_FILE = 64 * 1024 * 1024;
+
+export function kindOf(file: File): SendKind {
+  if (file.type.startsWith("image/") && file.type !== "image/svg+xml") return "image";
+  if (file.type === "video/mp4" || file.type === "video/quicktime") return "video";
+  if (file.type.startsWith("audio/")) return "audio";
+  return "document";
+}
+
+/** Sends a file (or a recorded voice note) to the open chat. */
+export async function sendFile(blob: Blob, opts: { name: string; kind: SendKind; caption?: string; seconds?: number }) {
+  const jid = app.selected;
+  if (!jid || jid === AI) return;
+  if (blob.size > MAX_FILE) throw new Error("too-big");
+  const base64 = await readBase64(blob);
+  const mime = (blob.type || "application/octet-stream").split(";")[0];
+  const message = await api.sendMedia({
+    jid,
+    kind: opts.kind,
+    name: opts.name,
+    mime: opts.kind === "voice" ? blob.type || mime : mime,
+    base64,
+    caption: opts.caption ?? "",
+    seconds: Math.round(opts.seconds ?? 0),
+  });
+  append(message);
+}
+
 export function aiReady(): boolean {
   return app.ai.config.provider !== null && app.ai.config.model !== "";
 }
@@ -116,6 +301,14 @@ async function refreshAi() {
 }
 
 export async function init() {
+  applyTheme(app.theme);
+  await on<Release>("update-available", (r) => (app.update = r));
+  await on<number>("history-progress", (p) => {
+    app.history = p >= 100 ? null : p;
+  });
+  await on<string>("picture-changed", (jid) => {
+    delete app.avatars[jid];
+  });
   await on<string>("ai-token", (token) => {
     app.ai.streaming += token;
     app.tail++;
@@ -144,7 +337,11 @@ export async function init() {
       void api.markRead(m.chat_jid);
     }
   });
-  await on<null>("chats-changed", () => void refreshChats());
+  await on<null>("chats-changed", () => {
+    refreshChats();
+    void refreshLists();
+  });
   app.status = await api.status();
-  await refreshChats();
+  app.chats = await api.chats();
+  await refreshLists();
 }

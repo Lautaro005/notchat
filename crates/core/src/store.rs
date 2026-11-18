@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Chat {
     pub jid: String,
     pub name: String,
@@ -18,9 +18,36 @@ pub struct Chat {
     pub unread: i64,
     pub auto_reply: bool,
     pub instructions: String,
+    #[serde(default)]
+    pub archived: bool,
+    /// Pin timestamp; 0 when the chat is not pinned.
+    #[serde(default)]
+    pub pinned: i64,
+    /// Unix seconds until which the chat is muted; -1 forever, 0 not muted.
+    #[serde(default)]
+    pub muted_until: i64,
+    #[serde(default)]
+    pub marked_unread: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// A user-made group of chats ("list"), stored only on this Mac.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct ChatList {
+    pub id: i64,
+    pub name: String,
+    pub jids: Vec<String>,
+}
+
+/// Disk usage of one chat, for the storage screen.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct ChatUsage {
+    pub jid: String,
+    pub name: String,
+    pub messages: i64,
+    pub media: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct Message {
     pub id: String,
     pub chat_jid: String,
@@ -32,6 +59,19 @@ pub struct Message {
     pub kind: String,
     pub text: String,
     pub by_ai: bool,
+    /// Media details; empty for text messages.
+    #[serde(default)]
+    pub mime: String,
+    #[serde(default)]
+    pub file_name: String,
+    #[serde(default)]
+    pub size: i64,
+    /// Duration of audio/video, in seconds.
+    #[serde(default)]
+    pub seconds: i64,
+    /// True when the media can be downloaded (its keys are stored).
+    #[serde(default)]
+    pub has_media: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,6 +120,20 @@ CREATE TABLE IF NOT EXISTS ai_messages (
   ts INTEGER NOT NULL,
   meta TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS contacts (
+  jid TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  push_name TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS lists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS list_members (
+  list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  jid TEXT NOT NULL,
+  PRIMARY KEY (list_id, jid)
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -102,6 +156,20 @@ impl Store {
         })?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
+        // Chats named after the contact book (or push name) when WhatsApp
+        // did not give the chat a name of its own.
+        conn.execute_batch(
+            "DROP VIEW IF EXISTS chat_view;
+             CREATE TEMP VIEW chat_view AS
+             SELECT c.jid,
+                    CASE WHEN c.name != '' THEN c.name
+                         ELSE COALESCE(NULLIF(ct.name, ''), NULLIF(ct.push_name, ''), '') END
+                      AS name,
+                    c.is_group, c.last_ts, c.last_preview, c.unread, c.auto_reply,
+                    c.instructions, c.archived, c.pinned, c.muted_until, c.marked_unread
+             FROM chats c LEFT JOIN contacts ct ON ct.jid = c.jid;",
+        )?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -118,8 +186,8 @@ impl Store {
     pub fn list_chats(&self) -> Result<Vec<Chat>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT jid,name,is_group,last_ts,last_preview,unread,auto_reply,instructions
-             FROM chats ORDER BY last_ts DESC",
+            "SELECT * FROM chat_view WHERE last_ts > 0 OR pinned > 0
+             ORDER BY pinned DESC, last_ts DESC",
         )?;
         let rows = stmt.query_map([], row_to_chat)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -128,12 +196,7 @@ impl Store {
     pub fn get_chat(&self, jid: &str) -> Result<Option<Chat>> {
         let conn = self.lock();
         Ok(conn
-            .query_row(
-                "SELECT jid,name,is_group,last_ts,last_preview,unread,auto_reply,instructions
-                 FROM chats WHERE jid = ?1",
-                [jid],
-                row_to_chat,
-            )
+            .query_row("SELECT * FROM chat_view WHERE jid = ?1", [jid], row_to_chat)
             .optional()?)
     }
 
@@ -150,9 +213,41 @@ impl Store {
         Ok(())
     }
 
+    /// Saves a contact-book name (`push = false`) or the name the contact
+    /// set for themselves (`push = true`). Does not create a chat.
+    pub fn upsert_contact(&self, jid: &str, name: &str, push: bool) -> Result<()> {
+        if name.is_empty() {
+            return Ok(());
+        }
+        let sql = if push {
+            "INSERT INTO contacts (jid, push_name) VALUES (?1, ?2)
+             ON CONFLICT(jid) DO UPDATE SET push_name = ?2"
+        } else {
+            "INSERT INTO contacts (jid, name) VALUES (?1, ?2)
+             ON CONFLICT(jid) DO UPDATE SET name = ?2"
+        };
+        self.lock().execute(sql, params![jid, name])?;
+        Ok(())
+    }
+
+    /// Makes sure a group shows in the list, dated at least `ts`.
+    pub fn upsert_group(&self, jid: &str, subject: &str, ts: i64) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO chats (jid, name, is_group, last_ts) VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT(jid) DO UPDATE SET
+               name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
+               is_group = 1,
+               last_ts = MAX(chats.last_ts, excluded.last_ts)",
+            params![jid, subject, ts],
+        )?;
+        Ok(())
+    }
+
     pub fn mark_read(&self, jid: &str) -> Result<()> {
-        self.lock()
-            .execute("UPDATE chats SET unread = 0 WHERE jid = ?1", [jid])?;
+        self.lock().execute(
+            "UPDATE chats SET unread = 0, marked_unread = 0 WHERE jid = ?1",
+            [jid],
+        )?;
         Ok(())
     }
 
@@ -177,12 +272,26 @@ impl Store {
     /// Stores a message and updates its chat summary. Returns `false` when the
     /// message was already stored (redelivery), so callers can skip side effects.
     pub fn insert_message(&self, m: &Message, is_group: bool) -> Result<bool> {
+        self.insert_message_full(m, is_group, None, true)
+    }
+
+    /// Like [`insert_message`](Self::insert_message), also storing the encoded
+    /// media keys. `count_unread` is false for imported history, whose unread
+    /// count comes from the phone instead.
+    pub fn insert_message_full(
+        &self,
+        m: &Message,
+        is_group: bool,
+        media: Option<&[u8]>,
+        count_unread: bool,
+    ) -> Result<bool> {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO messages
-               (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+               (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
+                mime,file_name,size,seconds,media)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![
                 m.chat_jid,
                 m.id,
@@ -192,12 +301,17 @@ impl Store {
                 m.ts,
                 m.kind,
                 m.text,
-                m.by_ai
+                m.by_ai,
+                m.mime,
+                m.file_name,
+                m.size,
+                m.seconds,
+                media
             ],
         )? > 0;
         if inserted {
             let preview = preview_of(m);
-            let unread_inc = i64::from(!m.from_me);
+            let unread_inc = i64::from(count_unread && !m.from_me);
             tx.execute(
                 "INSERT INTO chats (jid, is_group, last_ts, last_preview, unread)
                  VALUES (?1, ?2, ?3, ?4, ?5)
@@ -213,6 +327,241 @@ impl Store {
         Ok(inserted)
     }
 
+    /// The encoded media keys of a message, with its kind.
+    pub fn get_media(&self, chat_jid: &str, id: &str) -> Result<Option<(String, Vec<u8>)>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT kind, media FROM messages
+                 WHERE chat_jid = ?1 AND id = ?2 AND media IS NOT NULL",
+                params![chat_jid, id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    pub fn get_message(&self, chat_jid: &str, id: &str) -> Result<Option<Message>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
+                        mime,file_name,size,seconds,media IS NOT NULL
+                 FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![chat_jid, id],
+                row_to_message,
+            )
+            .optional()?)
+    }
+
+    /// Applies chat state imported from the phone's history.
+    pub fn apply_history_chat(&self, h: &HistoryChat) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO chats (jid, name, is_group, last_ts, unread, archived, pinned,
+                                muted_until, marked_unread)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(jid) DO UPDATE SET
+               name = CASE WHEN excluded.name != '' THEN excluded.name ELSE chats.name END,
+               last_ts = MAX(chats.last_ts, excluded.last_ts),
+               unread = MAX(chats.unread, excluded.unread),
+               archived = excluded.archived,
+               pinned = excluded.pinned,
+               muted_until = excluded.muted_until,
+               marked_unread = excluded.marked_unread",
+            params![
+                h.jid,
+                h.name,
+                h.is_group,
+                h.last_ts,
+                h.unread,
+                h.archived,
+                h.pinned,
+                h.muted_until,
+                h.marked_unread
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_archived(&self, jid: &str, archived: bool) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO chats (jid, archived, pinned) VALUES (?1, ?2, 0)
+             ON CONFLICT(jid) DO UPDATE SET archived = ?2,
+               pinned = CASE WHEN ?2 THEN 0 ELSE chats.pinned END",
+            params![jid, archived],
+        )?;
+        Ok(())
+    }
+
+    /// Pins (with the given timestamp) or unpins (`0`) a chat.
+    pub fn set_pinned(&self, jid: &str, pinned: i64) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO chats (jid, pinned) VALUES (?1, ?2)
+             ON CONFLICT(jid) DO UPDATE SET pinned = ?2",
+            params![jid, pinned],
+        )?;
+        Ok(())
+    }
+
+    pub fn pinned_count(&self) -> Result<i64> {
+        Ok(self
+            .lock()
+            .query_row("SELECT count(*) FROM chats WHERE pinned > 0", [], |r| {
+                r.get(0)
+            })?)
+    }
+
+    pub fn set_muted_until(&self, jid: &str, until: i64) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO chats (jid, muted_until) VALUES (?1, ?2)
+             ON CONFLICT(jid) DO UPDATE SET muted_until = ?2",
+            params![jid, until],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_marked_unread(&self, jid: &str, unread: bool) -> Result<()> {
+        self.lock().execute(
+            "UPDATE chats SET marked_unread = ?2,
+               unread = CASE WHEN ?2 THEN unread ELSE 0 END WHERE jid = ?1",
+            params![jid, unread],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes every message of a chat but keeps the chat in the list.
+    pub fn clear_chat(&self, jid: &str) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [jid])?;
+        tx.execute(
+            "UPDATE chats SET last_preview = '', unread = 0, marked_unread = 0 WHERE jid = ?1",
+            [jid],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Deletes a chat, its messages and its list memberships.
+    pub fn delete_chat(&self, jid: &str) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [jid])?;
+        tx.execute("DELETE FROM list_members WHERE jid = ?1", [jid])?;
+        tx.execute("DELETE FROM chats WHERE jid = ?1", [jid])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Every message of a chat, oldest first, for exporting.
+    pub fn all_messages(&self, chat_jid: &str) -> Result<Vec<Message>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
+                    mime,file_name,size,seconds,media IS NOT NULL
+             FROM messages WHERE chat_jid = ?1 ORDER BY ts, rowid",
+        )?;
+        let rows = stmt.query_map([chat_jid], row_to_message)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    // ---- lists -----------------------------------------------------------
+
+    pub fn lists(&self) -> Result<Vec<ChatList>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT id, name FROM lists ORDER BY id")?;
+        let mut lists = stmt
+            .query_map([], |r| {
+                Ok(ChatList {
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    jids: Vec::new(),
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let mut members = conn.prepare("SELECT jid FROM list_members WHERE list_id = ?1")?;
+        for list in &mut lists {
+            list.jids = members
+                .query_map([list.id], |r| r.get(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+        }
+        Ok(lists)
+    }
+
+    pub fn create_list(&self, name: &str) -> Result<i64> {
+        let conn = self.lock();
+        conn.execute("INSERT INTO lists (name) VALUES (?1)", [name])?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    pub fn rename_list(&self, id: i64, name: &str) -> Result<()> {
+        self.lock().execute(
+            "UPDATE lists SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_list(&self, id: i64) -> Result<()> {
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM list_members WHERE list_id = ?1", [id])?;
+        tx.execute("DELETE FROM lists WHERE id = ?1", [id])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn set_list_member(&self, id: i64, jid: &str, member: bool) -> Result<()> {
+        let conn = self.lock();
+        if member {
+            conn.execute(
+                "INSERT OR IGNORE INTO list_members (list_id, jid)
+                 SELECT id, ?2 FROM lists WHERE id = ?1",
+                params![id, jid],
+            )?;
+        } else {
+            conn.execute(
+                "DELETE FROM list_members WHERE list_id = ?1 AND jid = ?2",
+                params![id, jid],
+            )?;
+        }
+        Ok(())
+    }
+
+    // ---- storage ---------------------------------------------------------
+
+    /// Message counts and media bytes (as reported by WhatsApp) per chat,
+    /// biggest first.
+    pub fn usage(&self) -> Result<Vec<ChatUsage>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT m.chat_jid, COALESCE(c.name, ''), count(*), COALESCE(sum(m.size), 0)
+             FROM messages m LEFT JOIN chats c ON c.jid = m.chat_jid
+             GROUP BY m.chat_jid ORDER BY 4 DESC, 3 DESC LIMIT 200",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ChatUsage {
+                jid: r.get(0)?,
+                name: r.get(1)?,
+                messages: r.get(2)?,
+                media: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Deletes messages older than `ts`. Chats stay in the list.
+    pub fn delete_messages_before(&self, ts: i64) -> Result<usize> {
+        Ok(self
+            .lock()
+            .execute("DELETE FROM messages WHERE ts < ?1", [ts])?)
+    }
+
+    /// Rebuilds the database file so deleted rows free disk space.
+    pub fn vacuum(&self) -> Result<()> {
+        self.lock().execute_batch("VACUUM;")?;
+        Ok(())
+    }
+
     /// Returns up to `limit` messages older than `before_ts` (or the newest
     /// ones when `None`), in chronological order.
     pub fn list_messages(
@@ -223,7 +572,8 @@ impl Store {
     ) -> Result<Vec<Message>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai
+            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
+                    mime,file_name,size,seconds,media IS NOT NULL
              FROM messages WHERE chat_jid = ?1 AND ts < ?2
              ORDER BY ts DESC, rowid DESC LIMIT ?3",
         )?;
@@ -240,7 +590,8 @@ impl Store {
         let pattern = format!("%{}%", escape_like(query));
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai
+            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
+                    mime,file_name,size,seconds,media IS NOT NULL
              FROM messages WHERE text LIKE ?1 ESCAPE '\\'
              ORDER BY ts DESC LIMIT ?2",
         )?;
@@ -253,8 +604,7 @@ impl Store {
         let pattern = format!("%{}%", escape_like(query));
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT jid,name,is_group,last_ts,last_preview,unread,auto_reply,instructions
-             FROM chats WHERE name LIKE ?1 ESCAPE '\\' ORDER BY last_ts DESC LIMIT 20",
+            "SELECT * FROM chat_view WHERE name LIKE ?1 ESCAPE '\\' ORDER BY last_ts DESC LIMIT 20",
         )?;
         let rows = stmt.query_map([pattern], row_to_chat)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
@@ -341,10 +691,54 @@ impl Store {
 
     /// Removes all WhatsApp data (used on logout). Settings are kept.
     pub fn clear_whatsapp_data(&self) -> Result<()> {
-        self.lock()
-            .execute_batch("DELETE FROM messages; DELETE FROM chats;")?;
+        self.lock().execute_batch(
+            "DELETE FROM messages; DELETE FROM chats; DELETE FROM list_members;
+             DELETE FROM contacts;",
+        )?;
         Ok(())
     }
+}
+
+/// Chat state imported from the phone's history sync.
+#[derive(Debug, Clone, Default)]
+pub struct HistoryChat {
+    pub jid: String,
+    pub name: String,
+    pub is_group: bool,
+    pub last_ts: i64,
+    pub unread: i64,
+    pub archived: bool,
+    pub pinned: i64,
+    pub muted_until: i64,
+    pub marked_unread: bool,
+}
+
+/// Adds columns introduced after 0.1.1 to an existing database.
+fn migrate(conn: &Connection) -> Result<()> {
+    let has = |table: &str, column: &str| -> Result<bool> {
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(names.iter().any(|n| n == column))
+    };
+    let columns = [
+        ("chats", "archived", "INTEGER NOT NULL DEFAULT 0"),
+        ("chats", "pinned", "INTEGER NOT NULL DEFAULT 0"),
+        ("chats", "muted_until", "INTEGER NOT NULL DEFAULT 0"),
+        ("chats", "marked_unread", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "mime", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "file_name", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "size", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "seconds", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "media", "BLOB"),
+    ];
+    for (table, column, decl) in columns {
+        if !has(table, column)? {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl};"))?;
+        }
+    }
+    Ok(())
 }
 
 fn row_to_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
@@ -357,6 +751,10 @@ fn row_to_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
         unread: r.get(5)?,
         auto_reply: r.get(6)?,
         instructions: r.get(7)?,
+        archived: r.get(8)?,
+        pinned: r.get(9)?,
+        muted_until: r.get(10)?,
+        marked_unread: r.get(11)?,
     })
 }
 
@@ -371,6 +769,11 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         kind: r.get(6)?,
         text: r.get(7)?,
         by_ai: r.get(8)?,
+        mime: r.get(9)?,
+        file_name: r.get(10)?,
+        size: r.get(11)?,
+        seconds: r.get(12)?,
+        has_media: r.get(13)?,
     })
 }
 
@@ -421,6 +824,7 @@ mod tests {
             kind: "text".into(),
             text: text.into(),
             by_ai: false,
+            ..Default::default()
         }
     }
 
@@ -492,6 +896,87 @@ mod tests {
         assert!(!raw
             .windows(b"plaintext-marker".len())
             .any(|w| w == b"plaintext-marker"));
+    }
+
+    #[test]
+    fn flags_lists_and_media() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        s.insert_message(&msg("a", "1", 10, "hola", false), false)
+            .unwrap();
+        s.insert_message(&msg("b", "1", 20, "x", false), false)
+            .unwrap();
+        s.set_pinned("a", 99).unwrap();
+        assert_eq!(s.list_chats().unwrap()[0].jid, "a");
+        assert_eq!(s.pinned_count().unwrap(), 1);
+        s.set_archived("a", true).unwrap();
+        let a = s.get_chat("a").unwrap().unwrap();
+        assert!(a.archived);
+        assert_eq!(a.pinned, 0, "archiving unpins");
+        // Like WhatsApp, archived chats stay archived when messages arrive.
+        s.insert_message(&msg("a", "2", 30, "volví", false), false)
+            .unwrap();
+        assert!(s.get_chat("a").unwrap().unwrap().archived);
+
+        let id = s.create_list("Trabajo").unwrap();
+        s.set_list_member(id, "a", true).unwrap();
+        s.set_list_member(id, "a", true).unwrap();
+        assert_eq!(s.lists().unwrap()[0].jids, ["a"]);
+        s.delete_chat("a").unwrap();
+        assert!(s.lists().unwrap()[0].jids.is_empty());
+        s.delete_list(id).unwrap();
+        assert!(s.lists().unwrap().is_empty());
+
+        let mut m = msg("b", "img", 40, "", false);
+        m.kind = "image".into();
+        m.size = 1234;
+        s.insert_message_full(&m, false, Some(b"keys"), true)
+            .unwrap();
+        assert!(s.get_message("b", "img").unwrap().unwrap().has_media);
+        assert_eq!(s.get_media("b", "img").unwrap().unwrap().1, b"keys");
+        assert_eq!(s.usage().unwrap()[0].media, 1234);
+        s.clear_chat("b").unwrap();
+        assert!(s.list_messages("b", None, 10).unwrap().is_empty());
+        assert_eq!(s.list_chats().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn contacts_name_chats_without_creating_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        s.upsert_contact("x", "Xavier", false).unwrap();
+        assert!(s.list_chats().unwrap().is_empty());
+        s.insert_message(&msg("x", "1", 5, "hi", false), false)
+            .unwrap();
+        assert_eq!(s.list_chats().unwrap()[0].name, "Xavier");
+        s.upsert_group("g@g.us", "Asado", 7).unwrap();
+        let chats = s.list_chats().unwrap();
+        assert_eq!(chats[0].name, "Asado");
+        assert!(chats[0].is_group);
+    }
+
+    #[test]
+    fn migrates_old_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.db");
+        let key = generate_key();
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(&format!("PRAGMA key = \"x'{key}'\";"))
+                .unwrap();
+            conn.execute_batch(
+                "CREATE TABLE chats (jid TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '',
+                   is_group INTEGER NOT NULL DEFAULT 0, last_ts INTEGER NOT NULL DEFAULT 0,
+                   last_preview TEXT NOT NULL DEFAULT '', unread INTEGER NOT NULL DEFAULT 0,
+                   auto_reply INTEGER NOT NULL DEFAULT 0, instructions TEXT NOT NULL DEFAULT '');
+                 INSERT INTO chats (jid, name) VALUES ('a', 'Ana');",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path, &key).unwrap();
+        let chat = s.get_chat("a").unwrap().unwrap();
+        assert_eq!(chat.name, "Ana");
+        assert!(!chat.archived);
     }
 
     #[test]

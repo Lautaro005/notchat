@@ -11,6 +11,18 @@ use tokio::sync::mpsc::unbounded_channel;
 pub const EVENT_STATUS: &str = "status";
 pub const EVENT_MESSAGE: &str = "message";
 pub const EVENT_CHATS: &str = "chats-changed";
+pub const EVENT_HISTORY: &str = "history-progress";
+pub const EVENT_PICTURE: &str = "picture-changed";
+
+/// True when the chat is muted right now.
+fn muted(state: &AppState, jid: &str) -> bool {
+    state
+        .store
+        .get_chat(jid)
+        .ok()
+        .flatten()
+        .is_some_and(|c| c.muted_until < 0 || c.muted_until > crate::assistant::now())
+}
 
 pub async fn start(app: AppHandle, phone: Option<String>) -> Result<()> {
     let state = app.state::<Arc<AppState>>().inner().clone();
@@ -99,14 +111,21 @@ async fn on_event(app: &AppHandle, event: WaEvent) {
             live,
         } => {
             crate::autoreply::on_incoming(app, &state, &message, is_group, mentions_me, live);
-            if live && !message.from_me {
+            if live && !message.from_me && !muted(&state, &message.chat_jid) {
                 crate::notify::deliver(app, &state, &message, is_group, false);
             }
             let _ = app.emit(EVENT_MESSAGE, &message);
             let _ = app.emit(EVENT_CHATS, ());
         }
-        WaEvent::ChatUpdated { .. } => {
+        WaEvent::ChatUpdated { .. } | WaEvent::ChatsChanged => {
             let _ = app.emit(EVENT_CHATS, ());
+        }
+        WaEvent::HistoryProgress { progress } => {
+            let _ = app.emit(EVENT_HISTORY, progress);
+        }
+        WaEvent::PictureChanged { jid } => {
+            state.avatars.forget(&jid);
+            let _ = app.emit(EVENT_PICTURE, jid);
         }
     }
 }
