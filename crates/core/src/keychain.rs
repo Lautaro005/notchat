@@ -2,7 +2,7 @@
 //! plaintext and is never logged.
 
 use crate::error::{Error, Result};
-use rand::RngCore;
+use rand::Rng;
 use security_framework::passwords::{get_generic_password, set_generic_password};
 
 const SERVICE: &str = "app.notchat.desktop";
