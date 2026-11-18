@@ -81,8 +81,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Release notes: only this version's section of CHANGELOG.md.
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '/^## /{p = index($0, "## " v " ") == 1} p' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "No CHANGELOG section for $VERSION"; exit 1; }
           gh release create "$GITHUB_REF_NAME" dist/* \
             --repo "$GITHUB_REPOSITORY" \
             --title "Notchat $GITHUB_REF_NAME" \
-            --notes-file CHANGELOG.md \
+            --notes-file notes.md \
             --verify-tag
