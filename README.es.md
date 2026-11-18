@@ -45,6 +45,8 @@ Después abrí Notchat y en el teléfono andá a **WhatsApp → Ajustes → Disp
 | **Respuesta automática** | La IA puede contestar todos los chats, los que elijas o ninguno, por separado para chats y grupos, con instrucciones por chat, límite por hora, horario de silencio y un botón de pausa en la barra de menú. |
 | **Usá tu propio modelo** | Funciona con lo que ya tengas: Ollama, LM Studio o llama.cpp. ¿No tenés nada? Con un botón descarga llama.cpp y un modelo liviano (Gemma 4, Qwen3.5) y lo corre en tu Mac. |
 | **La app de chat completa** | Tus chats, grupos e historial del teléfono, con fotos de perfil. Fotos, videos, audios (grabar y escuchar), documentos, arrastrar y soltar y emoji. Fijá, silenciá, archivá, marcá como no leído, exportá y vaciá chats desde el clic derecho. |
+| **Todas las acciones de mensaje** | Responder (con el mensaje citado a la vista), reaccionar, destacar, fijar, reenviar, copiar, editar, eliminar para todos, guardar en Notas y seleccionar varios. Mandá los stickers de tu cuenta. |
+| **Notas** | Un chat privado para guardar textos, archivos y mensajes, como chat, tablero o post-its. No llega a WhatsApp salvo que reenvíes algo. |
 | **Tus propias listas** | Agrupá chats en listas como *Trabajo* o *Familia* y filtrá por ellas, junto a *No leídos* y *Grupos*. La lista de chats se puede ensanchar a gusto. |
 | **Liviano** | Núcleo nativo en Rust, webview del sistema e interfaz de ~90 KB. Corre en segundo plano desde la barra de menú. |
 | **Bilingüe** | Español e inglés, según el idioma del sistema. |

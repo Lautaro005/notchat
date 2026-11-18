@@ -48,6 +48,40 @@ fn yes() -> bool {
     true
 }
 
+/// Local ports to probe for each provider, for setups that moved them off
+/// the defaults. Always on 127.0.0.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProviderPorts {
+    pub ollama: u16,
+    pub lm_studio: u16,
+    pub llama_cpp: u16,
+}
+
+impl Default for ProviderPorts {
+    fn default() -> Self {
+        Self {
+            ollama: 11434,
+            lm_studio: 1234,
+            llama_cpp: 8080,
+        }
+    }
+}
+
+impl ProviderPorts {
+    /// Ports 0 and below 1024 (privileged) are refused.
+    pub fn validate(&self) -> Result<()> {
+        if [self.ollama, self.lm_studio, self.llama_cpp]
+            .iter()
+            .all(|p| *p >= 1024)
+        {
+            Ok(())
+        } else {
+            Err(Error::Invalid("port".into()))
+        }
+    }
+}
+
 impl AiConfig {
     pub fn is_ready(&self) -> bool {
         self.provider.is_some() && !self.model.is_empty() && check_local_url(&self.base_url).is_ok()
@@ -119,24 +153,28 @@ async fn list_models(base_url: &str) -> Option<Vec<String>> {
 
 /// Detects installed and running providers. `managed_url` is the address of
 /// Notchat's own llama.cpp server when it is running.
-pub async fn detect(managed_url: Option<String>, managed_installed: bool) -> Vec<ProviderInfo> {
+pub async fn detect(
+    managed_url: Option<String>,
+    managed_installed: bool,
+    ports: ProviderPorts,
+) -> Vec<ProviderInfo> {
     let candidates = [
         (
             ProviderKind::Ollama,
             "Ollama",
-            "http://127.0.0.1:11434".to_string(),
+            format!("http://127.0.0.1:{}", ports.ollama),
             app_installed(&["Ollama.app"]) || bin_installed(&["ollama"]),
         ),
         (
             ProviderKind::LmStudio,
             "LM Studio",
-            "http://127.0.0.1:1234".to_string(),
+            format!("http://127.0.0.1:{}", ports.lm_studio),
             app_installed(&["LM Studio.app"]) || bin_installed(&["lms"]),
         ),
         (
             ProviderKind::LlamaCpp,
             "llama.cpp",
-            "http://127.0.0.1:8080".to_string(),
+            format!("http://127.0.0.1:{}", ports.llama_cpp),
             app_installed(&["Llama.app", "LlamaBarn.app"]) || bin_installed(&["llama-server"]),
         ),
         (
@@ -435,6 +473,16 @@ mod tests {
         assert!(check_local_url("http://localhost.evil.com").is_err());
         assert!(check_local_url("https://localhost:1234").is_err());
         assert!(check_local_url("nope").is_err());
+    }
+
+    #[test]
+    fn ports_validate() {
+        assert!(ProviderPorts::default().validate().is_ok());
+        let bad = ProviderPorts {
+            ollama: 80,
+            ..Default::default()
+        };
+        assert!(bad.validate().is_err());
     }
 
     #[test]

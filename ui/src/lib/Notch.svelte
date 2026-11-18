@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import Icon from "./Icon.svelte";
-  import { api, on } from "./api";
+  import { api, native, on } from "./api";
   import { t, type Key } from "./i18n";
 
   interface NotchMessage {
@@ -17,6 +17,7 @@
   const LINGER_MS = 6500;
 
   let msg = $state<NotchMessage | null>(null);
+  let seq = $state(0);
   let expanded = $state(false);
   let draft = $state("");
   let busy = $state(false);
@@ -24,6 +25,7 @@
   let failed = $state(false);
   let hovered = $state(false);
   let aiReady = $state(false);
+  let avatar = $state<string | null>(null);
   let input: HTMLTextAreaElement | undefined = $state();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -31,8 +33,17 @@
   const body = $derived.by(() => {
     if (!msg) return "";
     if (msg.text) return msg.text;
-    return ["image", "video", "audio", "document", "sticker"].includes(msg.kind) ? t(`kind.${msg.kind}` as Key) : "";
+    return ["image", "video", "audio", "voice", "document", "sticker"].includes(msg.kind) ? t(`kind.${msg.kind}` as Key) : "";
   });
+  const initials = $derived(
+    (msg?.title ?? "")
+      .replace(/[^\p{L}\p{N}\s]/gu, "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase())
+      .join(""),
+  );
 
   function arm() {
     clearTimeout(timer);
@@ -95,22 +106,45 @@
     }
   }
 
+  async function show(m: NotchMessage) {
+    const sameChat = msg?.chat_jid === m.chat_jid;
+    msg = m;
+    seq++;
+    if (!sameChat) {
+      draft = "";
+      failed = false;
+      avatar = null;
+      if (expanded) {
+        expanded = false;
+        await api.notchExpand(false);
+      }
+      if (m.chat_jid.includes("@") && !m.chat_jid.endsWith("@notchat")) {
+        api.avatar(m.chat_jid).then(
+          (url) => msg?.chat_jid === m.chat_jid && (avatar = url),
+          () => {},
+        );
+      }
+    }
+    aiReady = await api.aiConfig().then((c) => c.provider !== null && c.model !== "", () => false);
+    arm();
+  }
+
   onMount(() => {
     document.documentElement.classList.add("notch-root");
-    void on<NotchMessage>("notch-message", async (m) => {
-      const sameChat = msg?.chat_jid === m.chat_jid;
-      msg = m;
-      if (!sameChat) {
-        draft = "";
-        failed = false;
-        if (expanded) {
-          expanded = false;
-          await api.notchExpand(false);
-        }
-      }
-      aiReady = await api.aiConfig().then((c) => c.provider !== null && c.model !== "", () => false);
-      arm();
-    });
+    void on<NotchMessage>("notch-message", (m) => void show(m));
+    // Browser preview of the panel: `?view=notch` (development only).
+    if (!native && import.meta.env.DEV && new URLSearchParams(location.search).get("view") === "notch") {
+      msg = {
+        chat_jid: "120363000000000001@g.us",
+        title: "Fútbol de los jueves",
+        sender: "Lucía R.",
+        text: "Falta uno para completar, ¿alguien se suma a las 21?",
+        kind: "text",
+        is_group: true,
+        notch_height: 32,
+      };
+      if (location.hash.includes("open")) expanded = true;
+    }
   });
 </script>
 
@@ -119,7 +153,8 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="notch"
-  style:padding-top="{msg?.notch_height ?? 0}px"
+  class:open={expanded}
+  style:--top="{msg?.notch_height ?? 0}px"
   onmouseenter={() => {
     hovered = true;
     clearTimeout(timer);
@@ -130,38 +165,47 @@
   }}
 >
   {#if msg}
-    <div class="row">
-      <button class="main" onclick={() => (preview ? close() : api.notchOpenChat(msg!.chat_jid))}>
-        <span class="title">
-          {msg.title}{#if msg.sender}<span class="sender"> · {msg.sender}</span>{/if}
-        </span>
-        <span class="text" class:clamp={!expanded}>{body}</span>
-      </button>
-      {#if !expanded && !preview}
-        <button class="pill" onclick={expand}>{t("notch.reply")}</button>
-      {/if}
-      <button class="x" onclick={close} aria-label={t("notch.dismiss")}><Icon name="close" size={14} /></button>
-    </div>
+    {#key seq}
+      <div class="row">
+        <button class="who" onclick={() => (preview ? close() : api.notchOpenChat(msg!.chat_jid))} aria-label={msg.title}>
+          <span class="av" class:group={msg.is_group}>
+            {#if avatar}<img src={avatar} alt="" />{:else if msg.is_group}<Icon name="group" size={17} />{:else}{initials || "·"}{/if}
+          </span>
+          <span class="lines">
+            <span class="title">
+              <b>{msg.title}</b>{#if msg.sender}<span class="sender">{msg.sender}</span>{/if}
+            </span>
+            <span class="text" class:clamp={!expanded}>{body}</span>
+          </span>
+        </button>
+        {#if !expanded && !preview}
+          <button class="reply" onclick={expand}><Icon name="reply" size={14} />{t("notch.reply")}</button>
+        {/if}
+        <button class="x" onclick={close} aria-label={t("notch.dismiss")}><Icon name="close" size={13} /></button>
+      </div>
+    {/key}
     {#if expanded}
-      <div class="reply">
-        <textarea
-          bind:this={input}
-          bind:value={draft}
-          rows="2"
-          placeholder={suggesting ? t("ai.thinking") : t("chat.placeholder")}
-          aria-label={t("chat.placeholder")}
-          disabled={busy}
-        ></textarea>
-        <div class="acts">
-          {#if failed}<span class="fail" role="alert">{t("notch.failed")}</span>{/if}
-          {#if aiReady}
-            <button class="ghost" onclick={suggest} disabled={suggesting}>
-              <Icon name="spark" size={13} />{t("notch.suggest")}
+      <div class="compose">
+        <div class="field" class:busy={suggesting}>
+          <textarea
+            bind:this={input}
+            bind:value={draft}
+            rows="2"
+            placeholder={suggesting ? t("ai.thinking") : t("chat.placeholder")}
+            aria-label={t("chat.placeholder")}
+            disabled={busy}
+          ></textarea>
+          <div class="acts">
+            {#if failed}<span class="fail" role="alert">{t("notch.failed")}</span>{/if}
+            {#if aiReady}
+              <button class="ghost" onclick={suggest} disabled={suggesting}>
+                <Icon name="spark" size={13} />{t("notch.suggest")}
+              </button>
+            {/if}
+            <button class="send" onclick={submit} disabled={!draft.trim() || busy} aria-label={t("chat.send")}>
+              <Icon name="send" size={15} />
             </button>
-          {/if}
-          <button class="send" onclick={submit} disabled={!draft.trim() || busy} aria-label={t("chat.send")}>
-            <Icon name="send" size={15} />
-          </button>
+          </div>
         </div>
       </div>
     {/if}
@@ -173,42 +217,103 @@
   :global(html.notch-root body) {
     background: #000;
   }
+  :global(html.notch-root) :focus-visible {
+    outline-color: #a598ff;
+  }
+  /* The panel is always the colour of the hardware notch, in both themes. */
   .notch {
+    --n-text: #f4f2fb;
+    --n-2: #a29db4;
+    --n-3: #6f6a82;
+    --n-field: #15141b;
+    --n-hover: #1f1d27;
+    --n-accent: #a598ff;
+    --n-on-accent: #120d33;
     height: 100%;
     display: flex;
     flex-direction: column;
+    padding-top: var(--top);
     background: #000;
-    color: #f5f3ee;
+    color: var(--n-text);
     font-size: 13px;
   }
   .row {
     flex: none;
-    height: 64px;
+    height: 70px;
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 12px 0 18px;
+    padding: 0 12px 0 14px;
+    animation: arrive 320ms var(--ease);
   }
-  .main {
+  @keyframes arrive {
+    from {
+      opacity: 0;
+      transform: translateY(-8px);
+      filter: blur(6px);
+    }
+  }
+  .who {
     flex: 1;
     min-width: 0;
-    display: grid;
-    gap: 1px;
+    display: flex;
+    align-items: center;
+    gap: 11px;
     text-align: left;
     color: inherit;
   }
-  .title {
-    font-weight: 600;
+  .av {
+    flex: none;
+    width: 40px;
+    height: 40px;
+    display: grid;
+    place-items: center;
     overflow: hidden;
-    text-overflow: ellipsis;
+    border-radius: 50%;
+    background: #2a2638;
+    color: var(--n-text);
+    font-family: var(--rounded);
+    font-size: 14px;
+    font-weight: 700;
+  }
+  .av.group {
+    border-radius: 13px;
+  }
+  .av img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .lines {
+    min-width: 0;
+    display: grid;
+    gap: 2px;
+  }
+  .title {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    min-width: 0;
     white-space: nowrap;
   }
+  .title b {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 600;
+  }
   .sender {
-    font-weight: 400;
-    color: #a9a59b;
+    flex: none;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+    color: var(--n-2);
   }
   .text {
-    color: #cfcbc2;
+    color: #d3cfdf;
+    font-size: 12.5px;
+    line-height: 1.3;
     overflow: hidden;
   }
   .text.clamp {
@@ -216,23 +321,29 @@
     -webkit-line-clamp: 2;
     line-clamp: 2;
     -webkit-box-orient: vertical;
-    line-height: 1.3;
   }
-  .row:has(.text.clamp) .text {
-    font-size: 12.5px;
+  .open .text {
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
-  .pill {
+  .reply {
     flex: none;
-    height: 26px;
-    padding: 0 12px;
-    border-radius: 13px;
-    background: #ff7a3d;
-    color: #1a0d05;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 0 12px 0 10px;
+    border-radius: 14px;
+    background: rgb(165 152 255 / 0.16);
+    color: #cdc5ff;
     font-size: 12px;
     font-weight: 600;
-    transition: transform 160ms var(--ease);
+    transition: background 160ms var(--ease), transform 160ms var(--ease);
   }
-  .pill:active {
+  .reply:hover {
+    background: rgb(165 152 255 / 0.26);
+  }
+  .reply:active {
     transform: scale(0.96);
   }
   .x {
@@ -242,92 +353,108 @@
     display: grid;
     place-items: center;
     border-radius: 50%;
-    color: #a9a59b;
+    color: var(--n-3);
+    transition: background 140ms var(--ease), color 140ms var(--ease);
   }
   .x:hover {
-    background: #26251f;
-    color: #f5f3ee;
+    background: var(--n-hover);
+    color: var(--n-text);
   }
-  .reply {
+  .compose {
     flex: 1;
     min-height: 0;
-    display: flex;
-    gap: 8px;
-    align-items: flex-end;
-    padding: 0 12px 12px 14px;
-    animation: drop 220ms var(--ease);
+    padding: 0 12px 12px;
+    animation: unfold 240ms var(--ease);
   }
-  @keyframes drop {
+  @keyframes unfold {
     from {
       opacity: 0;
       transform: translateY(-6px);
+    }
+  }
+  .field {
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    padding: 8px 8px 8px 12px;
+    border-radius: 16px;
+    background: var(--n-field);
+    box-shadow: inset 0 0 0 1px #24222d;
+    transition: box-shadow 160ms var(--ease);
+  }
+  .field:focus-within {
+    box-shadow: inset 0 0 0 1.5px var(--n-accent);
+  }
+  .field.busy {
+    animation: breathe 1.4s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    50% {
+      box-shadow: inset 0 0 0 1.5px rgb(165 152 255 / 0.4);
     }
   }
   textarea {
     flex: 1;
     min-width: 0;
     height: 100%;
-    padding: 8px 12px;
+    padding: 0;
     border: 0;
-    border-radius: 14px;
-    background: #1c1b18;
-    color: #f5f3ee;
-    caret-color: #ff7a3d;
+    background: none;
+    color: var(--n-text);
+    caret-color: var(--n-accent);
     resize: none;
     outline: none;
-    line-height: 1.35;
+    line-height: 1.38;
     user-select: text;
     -webkit-user-select: text;
   }
   textarea::placeholder {
-    color: #8d897f;
-  }
-  textarea:focus-visible {
-    box-shadow: inset 0 0 0 1.5px #ff7a3d;
+    color: var(--n-3);
   }
   .acts {
     flex: none;
-    display: grid;
-    justify-items: end;
+    display: flex;
+    align-items: center;
     gap: 6px;
   }
   .ghost {
-    display: flex;
+    height: 28px;
+    display: inline-flex;
     align-items: center;
-    gap: 4px;
-    height: 24px;
-    padding: 0 8px;
-    border-radius: 12px;
-    color: #ff9a68;
+    gap: 5px;
+    padding: 0 10px;
+    border-radius: 14px;
+    color: #cdc5ff;
     font-size: 12px;
     font-weight: 500;
   }
   .ghost:hover:not(:disabled) {
-    background: #26251f;
+    background: var(--n-hover);
   }
   .ghost:disabled {
     opacity: 0.5;
   }
   .send {
-    width: 28px;
-    height: 28px;
+    width: 30px;
+    height: 30px;
     display: grid;
     place-items: center;
     border-radius: 50%;
-    background: #ff7a3d;
-    color: #1a0d05;
-    transition: opacity 160ms var(--ease);
+    background: var(--n-accent);
+    color: var(--n-on-accent);
+    transition: opacity 160ms var(--ease), transform 160ms var(--ease);
+  }
+  .send:active:not(:disabled) {
+    transform: scale(0.94);
   }
   .send:disabled {
-    opacity: 0.35;
+    opacity: 0.3;
   }
   .fail {
+    max-width: 120px;
     font-size: 11px;
     color: #ff8a80;
-    max-width: 110px;
     text-align: right;
-  }
-  :global(html.notch-root) :focus-visible {
-    outline-color: #ff7a3d;
   }
 </style>

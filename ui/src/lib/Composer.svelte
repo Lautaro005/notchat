@@ -2,8 +2,10 @@
   import { onDestroy, tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
-  import { app, kindOf, MAX_FILE, openMenu, send, sendFile } from "./app.svelte";
-  import { bytes, duration, t } from "./i18n";
+  import { app, appendSent, chatTitle, kindOf, MAX_FILE, openMenu, send, sendFile } from "./app.svelte";
+  import { EMOJI } from "./emoji";
+  import { bytes, duration, t, tf, type Key } from "./i18n";
+  import type { Sticker } from "./api";
 
   let { files = $bindable([]) }: { files?: File[] } = $props();
 
@@ -14,6 +16,9 @@
   let mediaInput: HTMLInputElement | undefined = $state();
   let docInput: HTMLInputElement | undefined = $state();
   let emojiOpen = $state(false);
+  let panelTab = $state<"emoji" | "stickers">("emoji");
+  let stickers = $state<Sticker[] | null>(null);
+  let stickerUrls = $state<Record<string, string>>({});
 
   // ---- voice recording ------------------------------------------------------
   let recorder: MediaRecorder | null = null;
@@ -39,6 +44,89 @@
     stopRecording(false);
     void tick().then(() => input?.focus());
   });
+
+  // Editing puts the original text in the box; replying just focuses it.
+  $effect(() => {
+    const editing = app.editing;
+    if (editing) draft = editing.text;
+    void tick().then(() => input?.focus());
+  });
+  $effect(() => {
+    if (app.reply) void tick().then(() => input?.focus());
+  });
+
+  function replyName(): string {
+    const m = app.reply;
+    if (!m) return "";
+    if (m.from_me) return t("chat.you");
+    if (m.sender_name) return m.sender_name;
+    const c = app.chats.find((x) => x.jid === (m.sender_jid || m.chat_jid));
+    return c ? chatTitle(c) : chatTitle({ jid: m.sender_jid || m.chat_jid, name: "" });
+  }
+
+  function cancelContext() {
+    if (app.editing) draft = "";
+    app.reply = null;
+    app.editing = null;
+  }
+
+  async function openStickers() {
+    panelTab = "stickers";
+    if (stickers === null) {
+      try {
+        stickers = await api.stickers();
+      } catch {
+        stickers = [];
+      }
+    }
+  }
+
+  // Plain set: the template asks for images while rendering, so starting a
+  // load must not touch reactive state; only the finished load does.
+  const loadingStickers = new Set<string>();
+  function stickerSrc(id: string): string | undefined {
+    if (!(id in stickerUrls) && !loadingStickers.has(id)) {
+      loadingStickers.add(id);
+      api
+        .stickerImage(id)
+        .then((url) => (stickerUrls[id] = url))
+        .catch(() => loadingStickers.delete(id));
+    }
+    return stickerUrls[id];
+  }
+
+  async function sendSticker(s: Sticker) {
+    const jid = app.selected;
+    if (!jid) return;
+    emojiOpen = false;
+    try {
+      appendSent(await api.sendSticker(jid, s.id));
+    } catch {
+      failed = t("chat.sendFailed");
+    }
+  }
+
+  function stickerMenu(e: MouseEvent, s: Sticker) {
+    openMenu(e, [
+      {
+        label: s.favorite ? t("stk.unfavorite") : t("stk.favorite"),
+        icon: "star",
+        action: async () => {
+          await api.stickerFavorite(s.id, !s.favorite);
+          stickers = await api.stickers();
+        },
+      },
+      {
+        label: t("stk.remove"),
+        icon: "trash",
+        danger: true,
+        action: async () => {
+          await api.removeSticker(s.id);
+          stickers = (stickers ?? []).filter((x) => x.id !== s.id);
+        },
+      },
+    ]);
+  }
 
   // Typing indicator, throttled; failures do not matter.
   let typingSent = 0;
@@ -91,7 +179,12 @@
       draft = "";
       clearTimeout(typingTimer);
     } catch (e) {
-      failed = String(e).includes("too-big") ? t("chat.fileTooBig") : t("chat.sendFailed");
+      const msg = String(e);
+      failed = msg.includes("too-big")
+        ? t("chat.fileTooBig")
+        : app.editing && msg.includes("not connected")
+          ? t("msg.offlineEdit")
+          : t("chat.sendFailed");
     } finally {
       sending = false;
       await tick();
@@ -103,6 +196,9 @@
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       void submit();
+    } else if (e.key === "Escape" && (app.reply || app.editing)) {
+      e.preventDefault();
+      cancelContext();
     }
   }
 
@@ -121,12 +217,6 @@
       { label: t("attach.doc"), icon: "doc", action: () => docInput?.click() },
     ]);
   }
-
-  // A compact, hand-picked set; the system picker (Ctrl+Cmd+Space) has the rest.
-  const EMOJI =
-    "😀 😂 🤣 😊 😍 🥰 😘 😉 😎 🤩 🥳 😇 🙂 🙃 😅 😬 🤔 🤨 😐 😴 😮 😢 😭 😡 🤯 🥲 🙄 😏 🤗 🤝 👍 👎 👏 🙌 🙏 💪 👌 ✌️ 🤞 👋 ❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 🔥 ✨ ⭐ 🎉 🎂 🎁 ☕ 🍕 🍻 ⚽ 🚗 ✈️ 🏠 📍 📷 🎵 💯 ✅ ❌ ❗ ❓ 👀 💤 🌞 🌙 🌧️ 🐶 🐱 🌹".split(
-      " ",
-    );
 
   function insertEmoji(e: string) {
     const el = input;
@@ -230,7 +320,14 @@
   }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && (emojiOpen = false)} />
+<svelte:window
+  onkeydown={(e) => {
+    if (e.key === "Escape" && emojiOpen && !e.defaultPrevented) {
+      e.preventDefault();
+      emojiOpen = false;
+    }
+  }}
+/>
 
 <footer>
   {#if failed}<p class="fail" role="alert">{failed}</p>{/if}
@@ -254,10 +351,57 @@
   {/if}
 
   {#if emojiOpen}
-    <div class="emoji" role="dialog" aria-label={t("chat.emoji")}>
-      {#each EMOJI as e (e)}
-        <button onclick={() => insertEmoji(e)} aria-label={e}>{e}</button>
-      {/each}
+    <div class="panel" role="dialog" aria-label={t("chat.emoji")}>
+      <div class="tabs" role="tablist">
+        <button role="tab" aria-selected={panelTab === "emoji"} onclick={() => (panelTab = "emoji")}>
+          <Icon name="smile" size={15} />{t("chat.emojiTab")}
+        </button>
+        <button role="tab" aria-selected={panelTab === "stickers"} onclick={openStickers}>
+          <Icon name="sticker" size={15} />{t("stk.title")}
+        </button>
+      </div>
+      {#if panelTab === "emoji"}
+        <div class="emoji">
+          {#each EMOJI as e (e)}
+            <button onclick={() => insertEmoji(e)} aria-label={e}>{e}</button>
+          {/each}
+        </div>
+      {:else if stickers === null}
+        <p class="pempty">…</p>
+      {:else if stickers.length === 0}
+        <p class="pempty">{t("stk.empty")}</p>
+      {:else}
+        <div class="stickers scroll">
+          {#each stickers as s (s.id)}
+            {@const src = stickerSrc(s.id)}
+            <button
+              class="stk"
+              class:fav={s.favorite}
+              onclick={() => sendSticker(s)}
+              oncontextmenu={(e) => stickerMenu(e, s)}
+              aria-label={t("stk.send")}
+              title={s.favorite ? t("stk.favorites") : t("stk.send")}
+            >
+              {#if src}<img {src} alt="" loading="lazy" />{:else}<span class="ph"></span>{/if}
+              {#if s.favorite}<span class="favmark"><Icon name="star" size={10} /></span>{/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if app.reply || app.editing}
+    {@const m = app.reply ?? app.editing}
+    <div class="context">
+      <span class="cic"><Icon name={app.editing ? "pencil" : "reply"} size={16} /></span>
+      <span class="cbody">
+        <b>{app.editing ? t("msg.editing") : tf("msg.replyingTo", { name: replyName() })}</b>
+        <span>{m?.text || (m ? t(`kind.${m.kind}` as Key) : "")}</span>
+      </span>
+      <button class="icon-btn" onclick={cancelContext} aria-label={t("msg.cancelReply")} title={t("msg.cancelReply")}>
+        <Icon name="close" size={16} />
+      </button>
     </div>
   {/if}
 
@@ -388,8 +532,8 @@
   }
   .sendbtn {
     flex: none;
-    width: 30px;
-    height: 30px;
+    width: 32px;
+    height: 32px;
     display: grid;
     place-items: center;
     border-radius: 50%;
@@ -506,21 +650,128 @@
   .x:hover {
     background: var(--bg-3);
   }
-  .emoji {
+  .panel {
     position: absolute;
     left: 16px;
     bottom: calc(100% - 4px);
     z-index: 20;
-    width: 316px;
-    display: grid;
-    grid-template-columns: repeat(9, 1fr);
-    gap: 2px;
-    padding: 8px;
-    border-radius: 14px;
+    width: 340px;
+    padding: 6px 8px 8px;
+    border-radius: 16px;
     background: var(--panel);
     box-shadow: var(--shadow), 0 0 0 0.5px var(--line);
     animation: popin 160ms var(--ease);
     transform-origin: bottom left;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 6px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .tabs button {
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 10px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-2);
+  }
+  .tabs button:hover {
+    background: var(--bg-3);
+  }
+  .tabs button[aria-selected="true"] {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .emoji {
+    display: grid;
+    grid-template-columns: repeat(9, 1fr);
+    gap: 2px;
+  }
+  .stickers {
+    max-height: 260px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+  }
+  .stk {
+    position: relative;
+    aspect-ratio: 1;
+    display: grid;
+    place-items: center;
+    border-radius: 10px;
+    transition: background 120ms var(--ease), transform 160ms var(--ease);
+  }
+  .stk:hover {
+    background: var(--bg-3);
+    transform: scale(1.04);
+  }
+  .stk img {
+    width: 84%;
+    height: 84%;
+    object-fit: contain;
+  }
+  .stk .ph {
+    width: 60%;
+    height: 60%;
+    border-radius: 50%;
+    background: var(--bg-3);
+  }
+  .favmark {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    color: var(--accent);
+    display: grid;
+  }
+  .pempty {
+    margin: 0;
+    padding: 18px 10px;
+    color: var(--text-2);
+    font-size: 12.5px;
+    text-wrap: pretty;
+  }
+  .context {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 0 4px 6px;
+    padding: 7px 6px 7px 8px;
+    border-radius: 14px;
+    background: var(--panel);
+    box-shadow: 0 0 0 1px var(--line-soft);
+    animation: popin 160ms var(--ease);
+  }
+  .cic {
+    flex: none;
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 9px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .cbody {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    font-size: 12.5px;
+  }
+  .cbody b {
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .cbody span {
+    color: var(--text-2);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
   .emoji button {
     height: 32px;

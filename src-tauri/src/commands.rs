@@ -70,11 +70,19 @@ pub async fn send_text(
     state: St<'_>,
     jid: String,
     text: String,
+    reply_to: Option<String>,
 ) -> Result<Message> {
     check_jid(&jid)?;
-    let guard = state.session.lock().await;
-    let session = guard.as_ref().ok_or(Error::NotConnected)?;
-    let message = session.send_text(&jid, &text, false).await?;
+    if let Some(id) = &reply_to {
+        crate::chats::check_id(id)?;
+    }
+    let client = {
+        let guard = state.session.lock().await;
+        guard.as_ref().ok_or(Error::NotConnected)?.client()
+    };
+    let message = client
+        .send_reply(&jid, &text, reply_to.as_deref(), false)
+        .await?;
     let _ = app.emit(session::EVENT_CHATS, ());
     Ok(message)
 }
@@ -108,7 +116,21 @@ pub async fn detect_providers(state: St<'_>) -> Result<Vec<ProviderInfo>> {
     let installed =
         notchat_core::managed::Paths::new(&state.data_dir).server_installed(&catalog.llama_server);
     let url = crate::managed::running_url(&state).await;
-    Ok(ai::detect(url, installed).await)
+    let ports: ai::ProviderPorts = state.store.get_json(KEY_AI_PORTS);
+    Ok(ai::detect(url, installed, ports).await)
+}
+
+const KEY_AI_PORTS: &str = "ai_ports";
+
+#[tauri::command]
+pub fn get_ai_ports(state: St<'_>) -> ai::ProviderPorts {
+    state.store.get_json(KEY_AI_PORTS)
+}
+
+#[tauri::command]
+pub fn set_ai_ports(state: St<'_>, ports: ai::ProviderPorts) -> Result<()> {
+    ports.validate()?;
+    state.store.set_json(KEY_AI_PORTS, &ports)
 }
 
 #[tauri::command]

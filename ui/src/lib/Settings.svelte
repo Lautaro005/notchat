@@ -4,10 +4,10 @@
   import Managed from "./Managed.svelte";
   import Segmented from "./Segmented.svelte";
   import Switch from "./Switch.svelte";
-  import { api, type Mode, type NotifyMode, type Provider } from "./api";
+  import { api, type Mode, type NotifyMode, type Provider, type ProviderPorts } from "./api";
   import Storage from "./Storage.svelte";
   import Updates from "./Updates.svelte";
-  import { aiReady, app, applyTheme, saveAiConfig, saveAutoReply, type Theme } from "./app.svelte";
+  import { aiReady, app, applyTheme, saveAiConfig, saveAutoReply, toast, type Theme } from "./app.svelte";
   import { locale, t, type Key } from "./i18n";
 
   let providers = $state<Provider[]>([]);
@@ -46,8 +46,35 @@
     }
   }
 
+  let ports = $state<ProviderPorts>({ ollama: 11434, lm_studio: 1234, llama_cpp: 8080 });
+  let portsError = $state(false);
+  const portFields: { key: keyof ProviderPorts; name: string }[] = [
+    { key: "ollama", name: "Ollama" },
+    { key: "lm_studio", name: "LM Studio" },
+    { key: "llama_cpp", name: "llama.cpp" },
+  ];
+
+  async function savePorts() {
+    const valid = Object.values(ports).every((p) => Number.isInteger(p) && p >= 1024 && p <= 65535);
+    portsError = !valid;
+    if (!valid) return;
+    try {
+      await api.setAiPorts($state.snapshot(ports));
+      toast(t("set.portsSaved"));
+      // A chosen provider follows its new port.
+      const kind = app.ai.config.provider;
+      if (kind && kind !== "managed") {
+        await saveAiConfig({ base_url: `http://127.0.0.1:${ports[kind]}` });
+      }
+      await scan();
+    } catch {
+      portsError = true;
+    }
+  }
+
   onMount(async () => {
     notify = await api.notifyMode();
+    ports = await api.aiPorts().catch(() => ports);
     await scan();
   });
 
@@ -64,7 +91,10 @@
   }
 
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape" && !app.confirm && !app.menu) app.settingsOpen = false;
+    if (e.key === "Escape" && !e.defaultPrevented && !app.confirm && !app.menu) {
+      e.preventDefault();
+      app.settingsOpen = false;
+    }
   }
 
   const sections = [
@@ -163,6 +193,28 @@
           {/if}
         {/each}
       </ul>
+      <details class="ports">
+        <summary>{t("set.ports")}</summary>
+        <p class="hint">{t("set.portsHint")}</p>
+        <div class="portgrid">
+          {#each portFields as f (f.key)}
+            <label>
+              <span>{f.name}</span>
+              <input
+                type="number"
+                min="1024"
+                max="65535"
+                class="num"
+                bind:value={ports[f.key]}
+                aria-invalid={portsError}
+                onkeydown={(e) => e.key === "Enter" && savePorts()}
+              />
+            </label>
+          {/each}
+        </div>
+        {#if portsError}<p class="hint err" role="alert">{t("set.portInvalid")}</p>{/if}
+        <button class="btn small" onclick={savePorts} disabled={scanning}>{t("set.portsSave")}</button>
+      </details>
       <Managed onchange={scan} />
     </section>
     <section>
@@ -413,6 +465,51 @@
     border-radius: var(--r-m);
     background: var(--accent-soft);
     color: var(--text);
+  }
+  .ports {
+    margin: 12px 0 4px;
+    padding: 10px 12px;
+    border-radius: var(--r-m);
+    background: var(--bg-2);
+  }
+  .ports summary {
+    font-weight: 600;
+    font-size: 12.5px;
+    cursor: default;
+  }
+  .ports[open] summary {
+    margin-bottom: 4px;
+  }
+  .portgrid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+    margin: 8px 0 10px;
+  }
+  .portgrid label {
+    display: grid;
+    gap: 4px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .portgrid input {
+    height: 30px;
+    padding: 0 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    outline: none;
+    user-select: text;
+    -webkit-user-select: text;
+  }
+  .portgrid input:focus {
+    border-color: var(--accent);
+  }
+  .portgrid input[aria-invalid="true"] {
+    border-color: var(--danger);
+  }
+  .hint.err {
+    color: var(--danger);
   }
   .providers {
     margin: 0;

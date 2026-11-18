@@ -11,6 +11,8 @@ a trust boundary.
 | Messages, contacts, chat names | `notchat.db` (SQLCipher) |
 | Assistant conversation and attachments' extracted text | `notchat.db` |
 | Downloaded media and profile pictures | `media/`, `avatars/` (files `0600`, hashed names, not encrypted) |
+| Notes (text) and the account's sticker list (media keys) | `notchat.db` |
+| Files attached to notes | `notes/` (files `0600`, hashed names, not encrypted; not cleared by Settings → Storage) |
 | Database key | macOS Keychain, item `app.notchat.desktop / db-key-v1` |
 | Settings (AI provider, auto-reply rules) | `notchat.db` |
 

@@ -18,7 +18,7 @@ type St<'a> = State<'a, Arc<AppState>>;
 /// WhatsApp lets you pin up to three chats.
 const MAX_PINNED: i64 = 3;
 
-async fn wa(state: &AppState) -> Result<WaClient> {
+pub(crate) async fn wa(state: &AppState) -> Result<WaClient> {
     state
         .session
         .lock()
@@ -32,7 +32,7 @@ fn now() -> i64 {
     crate::assistant::now()
 }
 
-fn check_id(id: &str) -> Result<()> {
+pub(crate) fn check_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 128
         && id
@@ -183,7 +183,7 @@ fn downloads_dir() -> Result<PathBuf> {
 
 /// A file name safe to create in Downloads: no path separators or control
 /// characters, not hidden, and not overwriting an existing file.
-fn unique_download(name: &str) -> Result<PathBuf> {
+pub(crate) fn unique_download(name: &str) -> Result<PathBuf> {
     let clean: String = name
         .chars()
         .map(|c| {
@@ -223,7 +223,7 @@ fn unique_download(name: &str) -> Result<PathBuf> {
     Err(Error::Invalid("file name".into()))
 }
 
-fn reveal(path: &std::path::Path) {
+pub(crate) fn reveal(path: &std::path::Path) {
     let _ = std::process::Command::new("/usr/bin/open")
         .arg("-R")
         .arg(path)
@@ -265,7 +265,7 @@ pub fn chat_export(state: St<'_>, jid: String) -> Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
-fn data_url(mime: &str, bytes: &[u8]) -> String {
+pub(crate) fn data_url(mime: &str, bytes: &[u8]) -> String {
     format!(
         "data:{mime};base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -311,7 +311,11 @@ pub async fn avatar(state: St<'_>, jid: String) -> Result<Option<String>> {
     }
 }
 
-async fn media_bytes(state: &AppState, jid: &str, id: &str) -> Result<(Message, Vec<u8>)> {
+pub(crate) async fn media_bytes(
+    state: &AppState,
+    jid: &str,
+    id: &str,
+) -> Result<(Message, Vec<u8>)> {
     let message = state
         .store
         .get_message(jid, id)?
@@ -328,7 +332,7 @@ async fn media_bytes(state: &AppState, jid: &str, id: &str) -> Result<(Message, 
     Ok((message, bytes))
 }
 
-fn mime_of(m: &Message) -> String {
+pub(crate) fn mime_of(m: &Message) -> String {
     let base = m.mime.split(';').next().unwrap_or("").trim();
     let playable = ["image/", "video/", "audio/"]
         .iter()
@@ -361,7 +365,7 @@ pub async fn media(state: St<'_>, jid: String, id: String) -> Result<String> {
     Ok(data_url(&mime_of(&message), &bytes))
 }
 
-fn extension_for(mime: &str) -> &'static str {
+pub(crate) fn extension_for(mime: &str) -> &'static str {
     match mime {
         "image/jpeg" => "jpg",
         "image/png" => "png",

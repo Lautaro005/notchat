@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.3 — 2026-11-18
+
+Message actions, a notes chat and a new look.
+
+- **Message menu.** Hover a message for the chevron (or right-click): reply, react, star, pin for everyone (7 days), forward to up to five chats, copy, edit your own text (first 15 minutes), save to Downloads, save to Notes, message info, delete for me or for everyone, and select several messages at once for copy, star, forward, save or delete. Quick react and reply buttons sit next to each message.
+- **Replies show what they answer.** Quoted messages appear inside the bubble with who wrote them; click one to jump to the original. Replies you send are real WhatsApp replies.
+- **Reactions, edits and deletions** from your phone and other people show up live. Pinned messages get a bar at the top of the chat.
+- **Stickers from your account.** The emoji panel has a Stickers tab with your phone's recent stickers (imported when linking) and every sticker you send or receive. Right-click to favourite or remove.
+- **Notes.** A private chat pinned under Notchat AI for things you want at hand: text, files and messages saved from your chats. Three views: chat, board (drag between Pinned, To do and Done) and sticky notes with colours. Notes never go to WhatsApp unless you forward one.
+- **New palette and design.** Porcelain neutrals with one iris accent; your messages in iris bubbles; tighter grouping with clear gaps between runs of messages.
+- **Notch panel redesign.** Shows the contact's photo, sits flush with the notch with only the bottom corners rounded, and no longer has light edges.
+- **Group previews** in the chat list say who sent the last message; long names and previews end in "…" instead of widening the list.
+- **Esc** closes the open chat (after any menu, dialog, reply or selection).
+- **Settings → AI → Local ports** to point Notchat at Ollama, LM Studio or llama.cpp on non-default ports.
+- The Settings button is now a gear; the assistant's message box is as wide as the chats'.
+
 ## 0.1.2 — 2026-11-18
 
 A much fuller chat app, with a new look.

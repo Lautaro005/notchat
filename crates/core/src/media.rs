@@ -52,6 +52,16 @@ impl MediaCache {
         }
     }
 
+    /// A cache rooted somewhere else (notes keep their files apart from the
+    /// WhatsApp media cache, so clearing storage never deletes them).
+    pub fn at(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    pub fn remove(&self, chat: &str, id: &str) {
+        let _ = std::fs::remove_file(self.path(chat, id));
+    }
+
     fn chat_dir(&self, chat: &str) -> PathBuf {
         self.root.join(hashed(chat, 16))
     }

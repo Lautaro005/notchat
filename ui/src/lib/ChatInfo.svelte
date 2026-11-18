@@ -279,8 +279,8 @@
     box-shadow: inset 0 0 0 1px var(--line);
   }
   .chip[aria-pressed="true"] {
-    background: var(--ink);
-    color: var(--on-ink);
+    background: var(--accent);
+    color: var(--on-accent);
     box-shadow: none;
   }
   .chip:hover:not([aria-pressed="true"]) {

@@ -2,7 +2,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 /** True inside the Tauri webview; false in a plain browser preview. */
-const native = "__TAURI_INTERNALS__" in window;
+export const native = "__TAURI_INTERNALS__" in window;
 
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (native) return tauriInvoke<T>(cmd, args);
@@ -37,6 +37,9 @@ export interface Chat {
   /** Unix seconds; -1 forever, 0 not muted. */
   muted_until: number;
   marked_unread: boolean;
+  /** Who sent the last message (groups); empty when it was me. */
+  last_sender: string;
+  last_from_me: boolean;
 }
 
 export interface ChatList {
@@ -98,6 +101,50 @@ export interface Message {
   size: number;
   seconds: number;
   has_media: boolean;
+  quote_id: string;
+  quote_sender: string;
+  quote_text: string;
+  quote_kind: string;
+  forwarded: boolean;
+  edited: boolean;
+  deleted: boolean;
+  starred: boolean;
+  /** Pin timestamp, 0 when not pinned. */
+  pinned: number;
+  reactions: Reaction[];
+}
+
+export interface Reaction {
+  emoji: string;
+  sender_jid: string;
+  from_me: boolean;
+}
+
+export interface Sticker {
+  id: string;
+  favorite: boolean;
+  last_used: number;
+}
+
+export type NoteColor = "" | "yellow" | "pink" | "blue" | "green" | "violet";
+
+export interface Note {
+  id: number;
+  text: string;
+  color: NoteColor;
+  pinned: boolean;
+  done: boolean;
+  ts: number;
+  kind: string;
+  mime: string;
+  file_name: string;
+  size: number;
+}
+
+export interface ProviderPorts {
+  ollama: number;
+  lm_studio: number;
+  llama_cpp: number;
 }
 
 export type ProviderKind = "ollama" | "lm_studio" | "llama_cpp" | "managed";
@@ -204,7 +251,33 @@ export const api = {
   messages: (jid: string, beforeTs?: number) =>
     invoke<Message[]>("list_messages", { jid, beforeTs: beforeTs ?? null, limit: 60 }),
   markRead: (jid: string) => invoke<void>("mark_read", { jid }),
-  sendText: (jid: string, text: string) => invoke<Message>("send_text", { jid, text }),
+  sendText: (jid: string, text: string, replyTo?: string) =>
+    invoke<Message>("send_text", { jid, text, replyTo: replyTo ?? null }),
+  message: (jid: string, id: string) => invoke<Message | null>("get_message", { jid, id }),
+  react: (jid: string, id: string, emoji: string) => invoke<void>("msg_react", { jid, id, emoji }),
+  edit: (jid: string, id: string, text: string) => invoke<void>("msg_edit", { jid, id, text }),
+  deleteMessage: (jid: string, id: string, everyone: boolean) => invoke<void>("msg_delete", { jid, id, everyone }),
+  star: (jid: string, id: string, starred: boolean) => invoke<void>("msg_star", { jid, id, starred }),
+  pinMessage: (jid: string, id: string, pinned: boolean) => invoke<void>("msg_pin", { jid, id, pinned }),
+  forward: (jid: string, id: string, to: string[]) => invoke<number>("msg_forward", { jid, id, to }),
+  pinnedMessages: (jid: string) => invoke<Message[]>("pinned_messages", { jid }),
+  starredMessages: () => invoke<Message[]>("starred_messages"),
+  stickers: () => invoke<Sticker[]>("stickers"),
+  stickerImage: (id: string) => invoke<string>("sticker_image", { id }),
+  sendSticker: (jid: string, id: string) => invoke<Message>("sticker_send", { jid, id }),
+  stickerFavorite: (id: string, favorite: boolean) => invoke<void>("sticker_favorite", { id, favorite }),
+  removeSticker: (id: string) => invoke<void>("sticker_remove", { id }),
+  notes: () => invoke<Note[]>("notes_list"),
+  addNote: (text: string, color: NoteColor) => invoke<Note>("note_add", { text, color }),
+  addNoteFile: (a: { text: string; name: string; mime: string; base64: string }) => invoke<Note>("note_add_file", a),
+  noteFromMessage: (jid: string, id: string) => invoke<Note>("note_from_message", { jid, id }),
+  updateNote: (note: Note) => invoke<void>("note_update", { note }),
+  deleteNote: (id: number) => invoke<void>("note_delete", { id }),
+  noteMedia: (id: number) => invoke<string>("note_media", { id }),
+  saveNoteFile: (id: number) => invoke<string>("note_save_file", { id }),
+  sendNote: (id: number, to: string[]) => invoke<number>("note_send", { id, to }),
+  aiPorts: () => invoke<ProviderPorts>("get_ai_ports"),
+  setAiPorts: (ports: ProviderPorts) => invoke<void>("set_ai_ports", { ports }),
   logout: () => invoke<void>("logout"),
   archive: (jid: string, archived: boolean) => invoke<void>("chat_archive", { jid, archived }),
   pin: (jid: string, pinned: boolean) => invoke<void>("chat_pin", { jid, pinned }),

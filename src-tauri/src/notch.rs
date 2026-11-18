@@ -17,9 +17,11 @@ use tauri_nspanel::{CollectionBehavior, ManagerExt, PanelBuilder, PanelLevel, St
 
 pub const LABEL: &str = "notch";
 pub const EVENT_NOTCH: &str = "notch-message";
-const WIDTH: f64 = 400.0;
-const BODY_COMPACT: f64 = 64.0;
-const BODY_EXPANDED: f64 = 132.0;
+const WIDTH: f64 = 420.0;
+const BODY_COMPACT: f64 = 70.0;
+const BODY_EXPANDED: f64 = 150.0;
+/// Corner radius of the panel's rounded corners.
+const RADIUS: f64 = 24.0;
 /// Top inset used on screens without a notch, where the panel is a pill
 /// floating just under the top edge.
 const PILL_INSET: f64 = 8.0;
@@ -71,7 +73,7 @@ pub fn create(app: &AppHandle) -> tauri::Result<()> {
         .has_shadow(true)
         .hides_on_deactivate(false)
         .no_activate(true)
-        .corner_radius(20.0)
+        .transparent(true)
         .with_window(|w| {
             w.decorations(false)
                 .resizable(false)
@@ -129,12 +131,43 @@ fn place(app: &AppHandle, expanded: bool, make_key: bool) -> Option<f64> {
         NSSize::new(WIDTH, height),
     );
     panel.as_panel().setFrame_display(frame, true);
+    shape(panel.as_panel(), notch > 0.0);
     if make_key {
         panel.show_and_make_key();
     } else {
         panel.order_front_regardless();
     }
     Some(notch)
+}
+
+/// Clips the panel to its shape: on a notched screen only the bottom corners
+/// are rounded, so it reads as the notch growing down; otherwise a pill.
+///
+/// The window itself is clear (see `transparent(true)`); without clipping the
+/// content layer, its square corners showed as light edges.
+fn shape(panel: &tauri_nspanel::objc2_app_kit::NSPanel, notched: bool) {
+    use tauri_nspanel::objc2::msg_send;
+    use tauri_nspanel::objc2::rc::Retained;
+    use tauri_nspanel::objc2_foundation::NSObject;
+    // CACornerMask bits. A view's layer is not flipped, so "MinY" is the bottom.
+    const BOTTOM: usize = 0b0011;
+    const ALL: usize = 0b1111;
+    let Some(view) = panel.contentView() else {
+        return;
+    };
+    // SAFETY: public AppKit/QuartzCore selectors (`setWantsLayer:`, `layer`,
+    // `setCornerRadius:`, `setMaskedCorners:`, `setMasksToBounds:`) sent on
+    // the main thread to the panel's own content view and its backing layer,
+    // which exists once `setWantsLayer:` is YES.
+    unsafe {
+        let _: () = msg_send![&*view, setWantsLayer: true];
+        let layer: Option<Retained<NSObject>> = msg_send![&*view, layer];
+        let Some(layer) = layer else { return };
+        let _: () = msg_send![&*layer, setCornerRadius: RADIUS];
+        let _: () = msg_send![&*layer, setMaskedCorners: if notched { BOTTOM } else { ALL }];
+        let _: () = msg_send![&*layer, setMasksToBounds: true];
+    }
+    panel.invalidateShadow();
 }
 
 /// Shows an incoming message in the panel.

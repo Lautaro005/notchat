@@ -105,6 +105,11 @@ npm --prefix ui run check
 - El proceso fija `umask 077`: todo archivo nuevo queda `0600`.
 - Historial: `skip_history_sync` ya no se usa; los chats, grupos y mensajes del teléfono se importan en `wa::import_history`. Los contactos van a la tabla `contacts` y no crean chats; la lista solo muestra chats con `last_ts > 0` o fijados.
 - Archivos y fotos de perfil: claves de descarga en la columna `messages.media`; los bytes descargados en `media/` y `avatars/` con nombres hasheados (`crates/core/src/media.rs`).
+- Acciones de mensaje (responder, reaccionar, editar, borrar, destacar, fijar, reenviar): `WaClient` en `wa.rs`; el mensaje completo se guarda codificado en `messages.raw` para poder citarlo o reenviarlo sin volver a subir el archivo. Reacciones en la tabla `reactions` (la propia con remitente `me`).
+- Stickers: tabla `stickers` (id = SHA-256 del archivo); se llena con `recentStickers` del historial y con cada sticker enviado o recibido. Los Lottie se ignoran.
+- Notas: tabla `notes`; sus archivos van a `notes/` (aparte de `media/`, así «Liberar espacio» nunca los borra).
+- Puertos de los proveedores locales: ajuste `ai_ports` (`ProviderPorts`), siempre en 127.0.0.1 y ≥ 1024.
+- Vista previa del notch en el navegador: `http://127.0.0.1:1420/?view=notch#notch`.
 - Actualizaciones: `crates/core/src/update.rs` (verifica `SHA256SUMS` del release) y `src-tauri/src/updater.rs` (reemplaza el `.app` al salir).
 
 ## Acciones que requieren confirmación del usuario

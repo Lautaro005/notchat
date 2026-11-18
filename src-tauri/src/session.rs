@@ -10,6 +10,7 @@ use tokio::sync::mpsc::unbounded_channel;
 
 pub const EVENT_STATUS: &str = "status";
 pub const EVENT_MESSAGE: &str = "message";
+pub const EVENT_MESSAGE_CHANGED: &str = "message-changed";
 pub const EVENT_CHATS: &str = "chats-changed";
 pub const EVENT_HISTORY: &str = "history-progress";
 pub const EVENT_PICTURE: &str = "picture-changed";
@@ -122,6 +123,13 @@ async fn on_event(app: &AppHandle, event: WaEvent) {
         }
         WaEvent::HistoryProgress { progress } => {
             let _ = app.emit(EVENT_HISTORY, progress);
+        }
+        WaEvent::MessageChanged { chat_jid, id } => {
+            let _ = app.emit(
+                EVENT_MESSAGE_CHANGED,
+                serde_json::json!({ "chat_jid": chat_jid, "id": id }),
+            );
+            let _ = app.emit(EVENT_CHATS, ());
         }
         WaEvent::PictureChanged { jid } => {
             state.avatars.forget(&jid);

@@ -4,6 +4,7 @@ mod chats;
 mod commands;
 mod logger;
 mod managed;
+mod messages;
 mod notch;
 mod notify;
 mod session;
@@ -61,6 +62,7 @@ fn init_state(app: &tauri::App) -> Result<AppState, Box<dyn std::error::Error>> 
         managed: tokio::sync::Mutex::new(None),
         managed_busy: Default::default(),
         media: notchat_core::media::MediaCache::new(&data_dir),
+        note_files: notchat_core::media::MediaCache::at(data_dir.join("notes")),
         avatars: notchat_core::media::AvatarCache::new(&data_dir),
         avatar_slots: tokio::sync::Semaphore::new(4),
         update_busy: Default::default(),
@@ -125,6 +127,8 @@ pub fn run() {
             commands::send_text,
             commands::logout,
             commands::detect_providers,
+            commands::get_ai_ports,
+            commands::set_ai_ports,
             commands::get_ai_config,
             commands::set_ai_config,
             commands::ai_history,
@@ -169,6 +173,29 @@ pub fn run() {
             chats::storage_clear_media,
             chats::storage_clear_avatars,
             chats::storage_delete_older,
+            messages::get_message,
+            messages::msg_react,
+            messages::msg_edit,
+            messages::msg_delete,
+            messages::msg_star,
+            messages::msg_pin,
+            messages::msg_forward,
+            messages::pinned_messages,
+            messages::starred_messages,
+            messages::stickers,
+            messages::sticker_image,
+            messages::sticker_send,
+            messages::sticker_favorite,
+            messages::sticker_remove,
+            messages::notes_list,
+            messages::note_add,
+            messages::note_add_file,
+            messages::note_from_message,
+            messages::note_update,
+            messages::note_delete,
+            messages::note_media,
+            messages::note_save_file,
+            messages::note_send,
             updater::get_update_auto,
             updater::set_update_auto,
             updater::check_update,

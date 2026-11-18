@@ -32,7 +32,7 @@ pub enum WaEvent {
     LoggedOut,
     /// A new message was stored. `mentions_me` is only meaningful in groups.
     Message {
-        message: Message,
+        message: Box<Message>,
         is_group: bool,
         mentions_me: bool,
         live: bool,
@@ -48,6 +48,11 @@ pub enum WaEvent {
     },
     PictureChanged {
         jid: String,
+    },
+    /// A stored message changed (reaction, edit, deletion, star, pin).
+    MessageChanged {
+        chat_jid: String,
+        id: String,
     },
 }
 
@@ -142,14 +147,91 @@ struct Described {
     seconds: i64,
     /// The encoded media sub-message: everything needed to download it later.
     keys: Option<Vec<u8>>,
+    quote_id: String,
+    quote_sender: String,
+    quote_text: String,
+    quote_kind: String,
+    forwarded: bool,
+}
+
+impl Described {
+    /// Copies the details into a stored message.
+    fn fill(self, m: &mut Message) -> Option<Vec<u8>> {
+        m.kind = self.kind.to_string();
+        m.text = self.text;
+        m.mime = self.mime;
+        m.file_name = self.file_name;
+        m.size = self.size;
+        m.seconds = self.seconds;
+        m.has_media = self.keys.is_some();
+        m.quote_id = self.quote_id;
+        m.quote_sender = self.quote_sender;
+        m.quote_text = self.quote_text;
+        m.quote_kind = self.quote_kind;
+        m.forwarded = self.forwarded;
+        self.keys
+    }
+}
+
+/// The reply/forward context of a message, whatever its kind.
+fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
+    base.extended_text_message
+        .as_option()
+        .and_then(|m| m.context_info.as_option())
+        .or_else(|| {
+            base.image_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+        .or_else(|| {
+            base.video_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+        .or_else(|| {
+            base.audio_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+        .or_else(|| {
+            base.document_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+        .or_else(|| {
+            base.sticker_message
+                .as_option()
+                .and_then(|m| m.context_info.as_option())
+        })
+}
+
+/// Adds the quoted message and forward flag to a description.
+fn with_context(mut d: Described, base: &wa::Message) -> Described {
+    if let Some(ctx) = context_of(base) {
+        d.forwarded = ctx.is_forwarded == Some(true);
+        if let (Some(id), Some(quoted)) = (&ctx.stanza_id, ctx.quoted_message.as_option()) {
+            let q = describe_body(quoted);
+            d.quote_id = id.clone();
+            d.quote_sender = ctx.participant.clone().unwrap_or_default();
+            d.quote_text = q.text.chars().take(300).collect();
+            d.quote_kind = q.kind.to_string();
+        }
+    }
+    d
 }
 
 fn size_of(len: Option<u64>) -> i64 {
     len.map_or(0, |l| i64::try_from(l).unwrap_or(i64::MAX))
 }
 
-/// Classifies a message and extracts its visible text and media keys.
+/// Classifies a message and extracts its visible text, media keys and
+/// reply context.
 fn describe(message: &wa::Message) -> Described {
+    let base = message.get_base_message();
+    with_context(describe_body(base), base)
+}
+
+fn describe_body(message: &wa::Message) -> Described {
     let base = message.get_base_message();
     if let Some(text) = message.text_content() {
         return Described {
@@ -383,30 +465,282 @@ impl WaClient {
 
     /// Sends a text message and stores it. Returns the stored message.
     pub async fn send_text(&self, chat_jid: &str, text: &str, by_ai: bool) -> Result<Message> {
+        self.send_reply(chat_jid, text, None, by_ai).await
+    }
+
+    /// Sends a text message, optionally as a reply to `reply_to` (a message
+    /// id in the same chat).
+    pub async fn send_reply(
+        &self,
+        chat_jid: &str,
+        text: &str,
+        reply_to: Option<&str>,
+        by_ai: bool,
+    ) -> Result<Message> {
         let text = text.trim();
         if text.is_empty() || text.len() > 16_000 {
             return Err(Error::Invalid("message text".into()));
         }
         self.ready()?;
         let jid = parse_jid(chat_jid)?;
+        let body = match reply_to.map(|id| self.quote_context(chat_jid, &jid, id)) {
+            Some(ctx) => wa::Message::text_with_context(text, ctx?),
+            None => wa::Message::text(text),
+        };
+        self.send_and_store(chat_jid, &jid, body, by_ai).await
+    }
+
+    /// Builds the context that makes a message a reply to `id`.
+    fn quote_context(&self, chat_jid: &str, jid: &Jid, id: &str) -> Result<wa::ContextInfo> {
+        let original = self
+            .store
+            .get_message(chat_jid, id)?
+            .ok_or_else(|| Error::Invalid("quoted message".into()))?;
+        let quoted = match self.store.get_raw(chat_jid, id)? {
+            Some(raw) => wa::Message::decode_from_slice(&raw)
+                .map_err(|_| Error::Invalid("quoted message".into()))?,
+            None => wa::Message::text(original.text.clone()),
+        };
+        let sender = if original.from_me {
+            self.client
+                .pn()
+                .map(|j| j.to_non_ad_string())
+                .unwrap_or_default()
+        } else if original.sender_jid.is_empty() {
+            chat_jid.to_string()
+        } else {
+            original.sender_jid.clone()
+        };
+        let sender: Jid = sender
+            .parse()
+            .map_err(|_| Error::Invalid("quoted sender".into()))?;
+        Ok(whatsapp_rust::proto_helpers::build_quote_context_with_info(
+            id, &sender, jid, jid, &quoted,
+        ))
+    }
+
+    /// Sends any message body and stores what was sent.
+    async fn send_and_store(
+        &self,
+        chat_jid: &str,
+        jid: &Jid,
+        body: wa::Message,
+        by_ai: bool,
+    ) -> Result<Message> {
+        let raw = body.encode_to_vec();
+        let described = describe(&body);
         let sent = self
             .client
-            .send_message(&jid, wa::Message::text(text))
+            .send_message(jid, body)
             .await
             .map_err(|e| Error::Wa(e.to_string()))?;
-        let message = Message {
+        let mut message = Message {
             id: sent.message_id.to_string(),
             chat_jid: chat_jid.to_string(),
             from_me: true,
             ts: chrono::Utc::now().timestamp(),
-            kind: "text".into(),
-            text: text.to_string(),
             by_ai,
             ..Default::default()
         };
-        self.store
-            .insert_message(&message, chat_jid.ends_with("@g.us"))?;
+        let keys = described.fill(&mut message);
+        mark_own_quote(&mut message, &own_jids(&self.client));
+        if message.kind == "sticker" {
+            self.remember_sticker(keys.as_deref(), message.ts);
+        }
+        self.store.insert_message_full(
+            &message,
+            chat_jid.ends_with("@g.us"),
+            keys.as_deref(),
+            Some(&raw),
+            true,
+        )?;
         Ok(message)
+    }
+
+    /// The key WhatsApp uses to point at a stored message.
+    fn key_of(&self, chat_jid: &str, id: &str) -> Result<(Message, wa::MessageKey)> {
+        let m = self
+            .store
+            .get_message(chat_jid, id)?
+            .ok_or_else(|| Error::Invalid("message".into()))?;
+        let participant = (chat_jid.ends_with("@g.us") && !m.from_me && !m.sender_jid.is_empty())
+            .then(|| m.sender_jid.clone());
+        let key = wa::MessageKey {
+            remote_jid: Some(chat_jid.to_string()),
+            from_me: Some(m.from_me),
+            id: Some(id.to_string()),
+            participant,
+        };
+        Ok((m, key))
+    }
+
+    /// Reacts to a message; an empty emoji removes our reaction.
+    pub async fn react(&self, chat_jid: &str, id: &str, emoji: &str) -> Result<()> {
+        if emoji.chars().count() > 8 {
+            return Err(Error::Invalid("reaction".into()));
+        }
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let (_, key) = self.key_of(chat_jid, id)?;
+        self.client
+            .send_reaction(jid, key, emoji)
+            .await
+            .map_err(|e| Error::Wa(e.to_string()))?;
+        self.store.set_reaction(
+            chat_jid,
+            id,
+            "me",
+            true,
+            emoji,
+            chrono::Utc::now().timestamp(),
+        )
+    }
+
+    /// Edits one of our own text messages.
+    pub async fn edit(&self, chat_jid: &str, id: &str, text: &str) -> Result<()> {
+        let text = text.trim();
+        if text.is_empty() || text.len() > 16_000 {
+            return Err(Error::Invalid("message text".into()));
+        }
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let (m, _) = self.key_of(chat_jid, id)?;
+        if !m.from_me || m.kind != "text" || m.deleted {
+            return Err(Error::Invalid(
+                "only your own text messages can be edited".into(),
+            ));
+        }
+        self.client
+            .edit_message(jid, id, wa::Message::text(text))
+            .await
+            .map_err(|e| Error::Wa(e.to_string()))?;
+        self.store.edit_message(chat_jid, id, text)?;
+        Ok(())
+    }
+
+    /// Deletes a message for everyone: ours as sender, others' as group admin.
+    pub async fn revoke(&self, chat_jid: &str, id: &str) -> Result<()> {
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let (m, _) = self.key_of(chat_jid, id)?;
+        let kind = if m.from_me {
+            whatsapp_rust::send::RevokeType::Sender
+        } else {
+            let original_sender = parse_jid(&m.sender_jid)?;
+            whatsapp_rust::send::RevokeType::Admin { original_sender }
+        };
+        self.client
+            .revoke_message(jid, id, kind)
+            .await
+            .map_err(|e| Error::Wa(e.to_string()))?;
+        self.store.mark_deleted(chat_jid, id)?;
+        Ok(())
+    }
+
+    /// Deletes a message on this account's devices only.
+    pub async fn delete_for_me(&self, chat_jid: &str, id: &str) -> Result<()> {
+        let (m, _) = self.key_of(chat_jid, id)?;
+        self.store.delete_message(chat_jid, id)?;
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let participant = participant_of(chat_jid, &m)?;
+        self.client
+            .chat_actions()
+            .delete_message_for_me(&jid, participant.as_ref(), id, m.from_me, true, Some(m.ts))
+            .await
+            .map_err(app_state_err)
+    }
+
+    /// Stars or unstars a message on every device.
+    pub async fn star(&self, chat_jid: &str, id: &str, starred: bool) -> Result<()> {
+        let (m, _) = self.key_of(chat_jid, id)?;
+        self.store.set_starred(chat_jid, id, starred)?;
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let participant = participant_of(chat_jid, &m)?;
+        let actions = self.client.chat_actions();
+        if starred {
+            actions
+                .star_message(&jid, participant.as_ref(), id, m.from_me)
+                .await
+        } else {
+            actions
+                .unstar_message(&jid, participant.as_ref(), id, m.from_me)
+                .await
+        }
+        .map_err(app_state_err)
+    }
+
+    /// Pins a message for everyone in the chat (seven days) or unpins it.
+    pub async fn pin_message(&self, chat_jid: &str, id: &str, pinned: bool) -> Result<()> {
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let (_, key) = self.key_of(chat_jid, id)?;
+        if pinned {
+            self.client
+                .pin_message(jid, key, whatsapp_rust::send::PinDuration::Days7)
+                .await
+        } else {
+            self.client.unpin_message(jid, key).await
+        }
+        .map_err(|e| Error::Wa(e.to_string()))?;
+        let ts = if pinned {
+            chrono::Utc::now().timestamp()
+        } else {
+            0
+        };
+        self.store.set_message_pinned(chat_jid, id, ts)
+    }
+
+    /// Forwards a stored message to another chat, reusing its media.
+    pub async fn forward(&self, from_chat: &str, id: &str, to_chat: &str) -> Result<Message> {
+        self.ready()?;
+        let to = parse_jid(to_chat)?;
+        let original = self
+            .store
+            .get_message(from_chat, id)?
+            .ok_or_else(|| Error::Invalid("message".into()))?;
+        let source = match self.store.get_raw(from_chat, id)? {
+            Some(raw) => wa::Message::decode_from_slice(&raw)
+                .map_err(|_| Error::Invalid("message".into()))?,
+            None if original.kind == "text" && !original.text.is_empty() => {
+                wa::Message::text(original.text.clone())
+            }
+            None => return Err(Error::Invalid("this message can't be forwarded".into())),
+        };
+        use whatsapp_rust::proto_helpers::MessageExt;
+        let body = *source.get_base_message().prepare_for_forward();
+        self.send_and_store(to_chat, &to, body, false).await
+    }
+
+    /// Sends a sticker from the account's sticker list.
+    pub async fn send_sticker(&self, chat_jid: &str, sticker_id: &str) -> Result<Message> {
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let media = self
+            .store
+            .get_sticker(sticker_id)?
+            .ok_or_else(|| Error::Invalid("sticker".into()))?;
+        let sticker = wa::message::StickerMessage::decode_from_slice(&media)
+            .map_err(|_| Error::Invalid("sticker".into()))?;
+        let body = wa::Message {
+            sticker_message: MessageField::some(sticker),
+            ..Default::default()
+        };
+        self.send_and_store(chat_jid, &jid, body, false).await
+    }
+
+    /// Downloads a sticker from the account's sticker list.
+    pub async fn download_sticker(&self, sticker_id: &str) -> Result<Vec<u8>> {
+        let media = self
+            .store
+            .get_sticker(sticker_id)?
+            .ok_or_else(|| Error::Invalid("sticker".into()))?;
+        self.download("sticker", &media).await
+    }
+
+    fn remember_sticker(&self, keys: Option<&[u8]>, ts: i64) {
+        remember_sticker(&self.store, keys, ts);
     }
 
     /// Uploads and sends a file. Returns the stored message; the caller keeps
@@ -473,32 +807,8 @@ impl WaClient {
                 },
             ),
         };
-        let described = describe(&message);
-        let sent = self
-            .client
-            .send_message(&jid, message)
-            .await
-            .map_err(|e| Error::Wa(e.to_string()))?;
-        let stored = Message {
-            id: sent.message_id.to_string(),
-            chat_jid: chat_jid.to_string(),
-            from_me: true,
-            ts: chrono::Utc::now().timestamp(),
-            kind: described.kind.to_string(),
-            text: described.text,
-            mime: described.mime,
-            file_name: described.file_name,
-            size,
-            seconds: described.seconds,
-            has_media: described.keys.is_some(),
-            ..Default::default()
-        };
-        self.store.insert_message_full(
-            &stored,
-            chat_jid.ends_with("@g.us"),
-            described.keys.as_deref(),
-            true,
-        )?;
+        let mut stored = self.send_and_store(chat_jid, &jid, message, false).await?;
+        stored.size = size;
         Ok(stored)
     }
 
@@ -744,7 +1054,7 @@ async fn handle_event(
         Event::HistorySync(lazy) => {
             let progress = lazy.progress();
             if let Some(history) = lazy.get() {
-                let imported = import_history(history, store);
+                let imported = import_history(history, store, &own_jids(client));
                 log::info!("history chunk imported: {imported} messages");
             }
             if let Some(progress) = progress {
@@ -818,6 +1128,29 @@ async fn handle_event(
                 changed(&update.jid);
             }
         }
+        Event::StarUpdate(update) => {
+            let chat = update.chat_jid.to_string();
+            let starred = update.action.starred == Some(true);
+            if store
+                .set_starred(&chat, &update.message_id, starred)
+                .is_ok()
+                && !update.from_full_sync
+            {
+                let _ = tx.send(WaEvent::MessageChanged {
+                    chat_jid: chat,
+                    id: update.message_id.clone(),
+                });
+            }
+        }
+        Event::DeleteMessageForMeUpdate(update) => {
+            let chat = update.chat_jid.to_string();
+            if store.delete_message(&chat, &update.message_id).is_ok() && !update.from_full_sync {
+                let _ = tx.send(WaEvent::MessageChanged {
+                    chat_jid: chat,
+                    id: update.message_id.clone(),
+                });
+            }
+        }
         Event::PictureUpdate(update) => {
             let _ = tx.send(WaEvent::PictureChanged {
                 jid: update.jid.to_string(),
@@ -856,11 +1189,28 @@ async fn sync_groups(client: &Arc<Client>, store: &Arc<Store>, tx: &UnboundedSen
 
 /// Stores one history-sync chunk: chat state, push names and messages.
 /// Returns the number of new messages.
-fn import_history(history: &wa::HistorySync, store: &Store) -> usize {
+fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> usize {
     for p in &history.pushnames {
         if let (Some(id), Some(name)) = (&p.id, &p.pushname) {
             let _ = store.upsert_contact(id, name, true);
         }
+    }
+    for st in &history.recent_stickers {
+        let sticker = wa::message::StickerMessage {
+            url: st.url.clone(),
+            file_sha256: st.file_sha256.clone(),
+            file_enc_sha256: st.file_enc_sha256.clone(),
+            media_key: st.media_key.clone(),
+            mimetype: st.mimetype.clone(),
+            height: st.height,
+            width: st.width,
+            direct_path: st.direct_path.clone(),
+            file_length: st.file_length,
+            is_lottie: st.is_lottie,
+            ..Default::default()
+        };
+        let used = st.last_sticker_sent_ts.unwrap_or(0) / 1000;
+        remember_sticker(store, Some(&sticker.encode_to_vec()), used);
     }
     let mut imported = 0;
     for conv in &history.conversations {
@@ -915,6 +1265,7 @@ fn import_history(history: &wa::HistorySync, store: &Store) -> usize {
             if d.kind == "other" {
                 continue;
             }
+            let raw = body.get_base_message().encode_to_vec();
             let from_me = key.from_me == Some(true);
             let sender = if from_me {
                 String::new()
@@ -926,7 +1277,7 @@ fn import_history(history: &wa::HistorySync, store: &Store) -> usize {
             } else {
                 jid.clone()
             };
-            let message = Message {
+            let mut message = Message {
                 id,
                 chat_jid: jid.clone(),
                 sender_jid: sender,
@@ -935,16 +1286,30 @@ fn import_history(history: &wa::HistorySync, store: &Store) -> usize {
                 ts: info
                     .message_timestamp
                     .map_or(0, |t| i64::try_from(t).unwrap_or(0)),
-                kind: d.kind.to_string(),
-                text: d.text,
-                by_ai: false,
-                mime: d.mime,
-                file_name: d.file_name,
-                size: d.size,
-                seconds: d.seconds,
-                has_media: d.keys.is_some(),
+                starred: info.starred == Some(true),
+                ..Default::default()
             };
-            match store.insert_message_full(&message, is_group, d.keys.as_deref(), false) {
+            let keys = d.fill(&mut message);
+            mark_own_quote(&mut message, me);
+            if message.kind == "sticker" {
+                remember_sticker(store, keys.as_deref(), message.ts);
+            }
+            for r in &info.reactions {
+                if let (Some(key), Some(emoji)) = (r.key.as_option(), &r.text) {
+                    let mine = key.from_me == Some(true);
+                    let who = key.participant.clone().or_else(|| key.remote_jid.clone());
+                    let _ = store.set_reaction(
+                        &jid,
+                        &message.id,
+                        &who.unwrap_or_default(),
+                        mine,
+                        emoji,
+                        r.sender_timestamp_ms.unwrap_or(0) / 1000,
+                    );
+                }
+            }
+            match store.insert_message_full(&message, is_group, keys.as_deref(), Some(&raw), false)
+            {
                 Ok(true) => imported += 1,
                 Ok(false) => {}
                 Err(e) => log::warn!("failed to store message: {e}"),
@@ -952,6 +1317,18 @@ fn import_history(history: &wa::HistorySync, store: &Store) -> usize {
         }
     }
     imported
+}
+
+/// Replies to our own messages carry our JID (phone or LID); store "me" so
+/// the interface can say "You" without knowing our addresses.
+fn mark_own_quote(m: &mut Message, me: &[String]) {
+    if !m.quote_sender.is_empty()
+        && me
+            .iter()
+            .any(|j| user_part(j) == user_part(&m.quote_sender))
+    {
+        m.quote_sender = "me".into();
+    }
 }
 
 fn own_jids(client: &Arc<Client>) -> Vec<String> {
@@ -974,29 +1351,31 @@ async fn on_message(
     if !is_chat(&chat) {
         return;
     }
-    let d = describe(&inbound.message);
-    if d.kind == "other" {
-        // Protocol messages, reactions, edits: nothing to show yet.
+    let base = inbound.message.get_base_message();
+    if apply_change(base, info, &chat, store, tx) {
         return;
     }
+    let d = describe(&inbound.message);
+    if d.kind == "other" {
+        return;
+    }
+    let raw = base.encode_to_vec();
     let is_group = info.source.is_group;
-    let message = Message {
+    let mut message = Message {
         id: info.id.to_string(),
         chat_jid: chat.clone(),
         sender_jid: info.source.sender.to_string(),
         sender_name: info.push_name.clone(),
         from_me: info.source.is_from_me,
         ts: info.timestamp.timestamp(),
-        kind: d.kind.to_string(),
-        text: d.text,
-        by_ai: false,
-        mime: d.mime,
-        file_name: d.file_name,
-        size: d.size,
-        seconds: d.seconds,
-        has_media: d.keys.is_some(),
+        ..Default::default()
     };
-    match store.insert_message_full(&message, is_group, d.keys.as_deref(), true) {
+    let keys = d.fill(&mut message);
+    mark_own_quote(&mut message, me);
+    if message.kind == "sticker" {
+        remember_sticker(store, keys.as_deref(), message.ts);
+    }
+    match store.insert_message_full(&message, is_group, keys.as_deref(), Some(&raw), true) {
         Ok(true) => {}
         Ok(false) => return,
         Err(e) => {
@@ -1010,10 +1389,110 @@ async fn on_message(
     ensure_group_name(&chat, is_group, info, client, store).await;
     let _ = tx.send(WaEvent::Message {
         mentions_me: is_group && mentions(&inbound.message, me),
-        message,
+        message: Box::new(message),
         is_group,
         live: !info.is_offline,
     });
+}
+
+/// Applies reactions, edits and deletions to stored messages. Returns true
+/// when the message was one of those (and so has nothing else to show).
+fn apply_change(
+    base: &wa::Message,
+    info: &MessageInfo,
+    chat: &str,
+    store: &Store,
+    tx: &UnboundedSender<WaEvent>,
+) -> bool {
+    let changed = |id: &str| {
+        let _ = tx.send(WaEvent::MessageChanged {
+            chat_jid: chat.to_string(),
+            id: id.to_string(),
+        });
+    };
+    if let Some(r) = base.reaction_message.as_option() {
+        if let Some(id) = r.key.as_option().and_then(|k| k.id.clone()) {
+            let emoji = r.text.clone().unwrap_or_default();
+            let ts = r
+                .sender_timestamp_ms
+                .map_or_else(|| info.timestamp.timestamp(), |ms| ms / 1000);
+            let sender = info.source.sender.to_string();
+            if store
+                .set_reaction(chat, &id, &sender, info.source.is_from_me, &emoji, ts)
+                .is_ok()
+            {
+                changed(&id);
+            }
+        }
+        return true;
+    }
+    if let Some(p) = base.protocol_message.as_option() {
+        use wa::message::protocol_message::Type;
+        let Some(id) = p.key.as_option().and_then(|k| k.id.clone()) else {
+            return true;
+        };
+        match p.r#type {
+            Some(Type::Revoke) => {
+                if store.mark_deleted(chat, &id).unwrap_or(false) {
+                    changed(&id);
+                }
+            }
+            Some(Type::MESSAGE_EDIT) => {
+                let text = p
+                    .edited_message
+                    .as_option()
+                    .map(|m| describe_body(m).text)
+                    .unwrap_or_default();
+                if !text.is_empty() && store.edit_message(chat, &id, &text).unwrap_or(false) {
+                    changed(&id);
+                }
+            }
+            _ => {}
+        }
+        return true;
+    }
+    if let Some(pin) = base.pin_in_chat_message.as_option() {
+        use wa::message::pin_in_chat_message::Type;
+        if let Some(id) = pin.key.as_option().and_then(|k| k.id.clone()) {
+            let ts = match pin.r#type {
+                Some(Type::PinForAll) => info.timestamp.timestamp().max(1),
+                _ => 0,
+            };
+            if store.set_message_pinned(chat, &id, ts).is_ok() {
+                changed(&id);
+            }
+        }
+        return true;
+    }
+    false
+}
+
+/// Adds a sticker (encoded `StickerMessage`) to the account's sticker list.
+fn remember_sticker(store: &Store, keys: Option<&[u8]>, ts: i64) {
+    let Some(keys) = keys else { return };
+    let Ok(sticker) = wa::message::StickerMessage::decode_from_slice(keys) else {
+        return;
+    };
+    // Animated Lottie stickers need a player we don't ship.
+    if sticker.is_lottie == Some(true) {
+        return;
+    }
+    let Some(sha) = sticker.file_sha256.as_deref().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let id: String = sha.iter().map(|b| format!("{b:02x}")).collect();
+    if let Err(e) = store.add_sticker(&id, keys, ts) {
+        log::warn!("failed to remember sticker: {e}");
+    }
+}
+
+/// The original sender, needed by app-state actions on others' group messages.
+fn participant_of(chat_jid: &str, m: &Message) -> Result<Option<Jid>> {
+    if chat_jid.ends_with("@g.us") && !m.from_me && !m.sender_jid.is_empty() {
+        parse_jid(&m.sender_jid).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 async fn ensure_group_name(
@@ -1065,6 +1544,23 @@ mod tests {
         assert_eq!(user_part("5491100:12@s.whatsapp.net"), "5491100");
         assert_eq!(user_part("5491100@s.whatsapp.net"), "5491100");
         assert_eq!(user_part("123@lid"), "123");
+    }
+
+    #[test]
+    fn own_quotes_become_me() {
+        let me = [
+            "5491100:3@s.whatsapp.net".to_string(),
+            "777@lid".to_string(),
+        ];
+        let mut m = Message {
+            quote_sender: "777@lid".into(),
+            ..Default::default()
+        };
+        mark_own_quote(&mut m, &me);
+        assert_eq!(m.quote_sender, "me");
+        m.quote_sender = "5491199@s.whatsapp.net".into();
+        mark_own_quote(&mut m, &me);
+        assert_eq!(m.quote_sender, "5491199@s.whatsapp.net");
     }
 
     #[test]
@@ -1138,8 +1634,12 @@ mod tests {
             }],
             ..Default::default()
         };
-        assert_eq!(import_history(&history, &store), 2);
-        assert_eq!(import_history(&history, &store), 0, "re-import is a no-op");
+        assert_eq!(import_history(&history, &store, &[]), 2);
+        assert_eq!(
+            import_history(&history, &store, &[]),
+            0,
+            "re-import is a no-op"
+        );
         let chats = store.list_chats().unwrap();
         assert_eq!(chats.len(), 1);
         assert_eq!(chats[0].name, "Uno");

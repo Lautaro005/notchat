@@ -1,17 +1,17 @@
 // Browser preview data, used only by `vite dev` outside Tauri so the design
 // can be reviewed in a plain browser. Never part of a production build.
-import type { Chat, Message, Status } from "./api";
+import type { Chat, Message, Note, Status } from "./api";
 
 const now = Math.floor(Date.now() / 1000);
 const view = new URLSearchParams(location.search).get("view") ?? "chats";
 
-const base = { auto_reply: false, instructions: "", archived: false, pinned: 0, muted_until: 0, marked_unread: false };
+const base = { auto_reply: false, instructions: "", archived: false, pinned: 0, muted_until: 0, marked_unread: false, last_sender: "", last_from_me: false };
 const chats: Chat[] = [
   { ...base, jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", is_group: false, last_ts: now - 90, last_preview: "Dale, nos vemos a las 8 entonces", unread: 2, pinned: now },
-  { ...base, jid: "120363000000000001@g.us", name: "Fútbol de los jueves", is_group: true, last_ts: now - 2400, last_preview: "Falta uno para completar", unread: 5, auto_reply: true, muted_until: -1 },
+  { ...base, jid: "120363000000000001@g.us", name: "Fútbol de los jueves", is_group: true, last_ts: now - 2400, last_preview: "Falta uno para completar", unread: 5, auto_reply: true, muted_until: -1, last_sender: "Lucía R." },
   { ...base, jid: "5491155550002@s.whatsapp.net", name: "", is_group: false, last_ts: now - 90000, last_preview: "[document]", unread: 0 },
   { ...base, jid: "5491155550003@s.whatsapp.net", name: "Mamá", is_group: false, last_ts: now - 260000, last_preview: "[voice]", unread: 0, marked_unread: true },
-  { ...base, jid: "120363000000000002@g.us", name: "Depto Palermo · expensas", is_group: true, last_ts: now - 400000, last_preview: "Ya transferí lo de este mes", unread: 0 },
+  { ...base, jid: "120363000000000002@g.us", name: "Depto Palermo · expensas y arreglos del edificio", is_group: true, last_ts: now - 400000, last_preview: "Ya transferí lo de este mes, mañana paso el comprobante por el grupo así lo tienen todos", unread: 0, last_from_me: true },
   { ...base, jid: "5491155550004@s.whatsapp.net", name: "Martín (trabajo)", is_group: false, last_ts: now - 600000, last_preview: "Te paso el informe el lunes", unread: 0 },
   { ...base, jid: "5491155550005@s.whatsapp.net", name: "Viejo chat", is_group: false, last_ts: now - 9000000, last_preview: "Gracias!", unread: 1, archived: true },
 ];
@@ -38,6 +38,16 @@ function m(id: string, chat: string, ago: number, text: string, from_me = false,
     size: 0,
     seconds: 0,
     has_media: false,
+    quote_id: "",
+    quote_sender: "",
+    quote_text: "",
+    quote_kind: "",
+    forwarded: false,
+    edited: false,
+    deleted: false,
+    starred: false,
+    pinned: 0,
+    reactions: [],
     ...extra,
   };
 }
@@ -50,16 +60,31 @@ const messages: Record<string, Message[]> = {
     m("4", chats[0].jid, 690, "", false, { kind: "image", has_media: true, size: 182000, mime: "image/jpeg" }),
     m("4b", chats[0].jid, 650, "", true, { kind: "voice", has_media: true, seconds: 14, mime: "audio/ogg" }),
     m("4c", chats[0].jid, 600, "", false, { kind: "document", has_media: true, size: 1240000, file_name: "Contrato alquiler 2026.pdf", mime: "application/pdf" }),
-    m("5", chats[0].jid, 400, "Perfecto. Llevo algo para tomar, ¿hace falta algo más? Puedo pasar por el súper de camino si me avisás antes de las 6.", true),
+    m("5", chats[0].jid, 400, "Perfecto. Llevo algo para tomar, ¿hace falta algo más? Puedo pasar por el súper de camino si me avisás antes de las 6.", true, { reactions: [{ emoji: "❤️", sender_jid: chats[0].jid, from_me: false }] }),
+    m("5b", chats[0].jid, 390, "Ah, y el código del portón es 4521", true, { edited: true, starred: true }),
     m("6", chats[0].jid, 200, "Llego 20:15, estoy saliendo de una reunión.", true, { by_ai: true }),
-    m("7", chats[0].jid, 90, "Dale, nos vemos a las 8 entonces"),
+    m("6b", chats[0].jid, 150, "", false, { deleted: true }),
+    m("7", chats[0].jid, 90, "Dale, nos vemos a las 8 entonces", false, { quote_id: "6", quote_sender: "", quote_text: "Llego 20:15, estoy saliendo de una reunión.", quote_kind: "text", reactions: [{ emoji: "👍", sender_jid: "me", from_me: true }, { emoji: "👍", sender_jid: chats[0].jid, from_me: false }] }),
   ],
   [chats[1].jid]: [
     m("1", chats[1].jid, 3000, "¿Quién juega hoy?", false, { sender_jid: "5491155550009@s.whatsapp.net", sender_name: "Tomás" }),
     m("2", chats[1].jid, 2900, "Yo voy", true),
-    m("3", chats[1].jid, 2400, "Falta uno para completar", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
+    m("2b", chats[1].jid, 2600, "", false, { kind: "sticker", has_media: true, sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
+    m("3", chats[1].jid, 2400, "Falta uno para completar", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R.", forwarded: true }),
+    m("3b", chats[1].jid, 2390, "Alguien que traiga pelota", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
   ],
 };
+
+const notes: Note[] = [
+  { id: 1, text: "Código del portón: 4521", color: "yellow", pinned: true, done: false, ts: now - 86400 * 3, kind: "text", mime: "", file_name: "", size: 0 },
+  { id: 2, text: "Comprar: pan, queso, tomates, yerba", color: "green", pinned: false, done: false, ts: now - 86400, kind: "text", mime: "", file_name: "", size: 0 },
+  { id: 3, text: "Turno dentista jueves 10:30", color: "pink", pinned: false, done: true, ts: now - 7200, kind: "text", mime: "", file_name: "", size: 0 },
+  { id: 4, text: "", color: "", pinned: false, done: false, ts: now - 3600, kind: "document", mime: "application/pdf", file_name: "Contrato alquiler 2026.pdf", size: 1240000 },
+  { id: 5, text: "Ideas para el finde: feria de San Telmo, cine, asado en lo de Tomás", color: "blue", pinned: false, done: false, ts: now - 600, kind: "text", mime: "", file_name: "", size: 0 },
+];
+
+const sticker = (h: number) =>
+  `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" fill="hsl(${h} 80% 62%)" stroke="#fff" stroke-width="5"/><circle cx="36" cy="42" r="6" fill="#222"/><circle cx="64" cy="42" r="6" fill="#222"/><path d="M32 60 Q50 78 68 60" stroke="#222" stroke-width="6" fill="none" stroke-linecap="round"/></svg>`)}`;
 
 const qr = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29" shape-rendering="crispEdges"><rect width="29" height="29" fill="#fff"/><path fill="#111" d="${Array.from({ length: 25 * 25 }, (_, i) => ((i * 7919) % 11 < 5 ? `M${2 + (i % 25)} ${2 + Math.floor(i / 25)}h1v1h-1z` : "")).join("")}"/></svg>`;
 
@@ -104,7 +129,19 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       return i >= 0 && i % 3 !== 2 ? photo(i * 47 + 20) : null;
     }
     case "media":
-      return landscape;
+      return args.id === "2b" ? sticker(40) : landscape;
+    case "notes_list":
+      return notes;
+    case "note_add":
+      return { id: Date.now(), text: args.text, color: args.color, pinned: false, done: false, ts: Math.floor(Date.now() / 1000), kind: "text", mime: "", file_name: "", size: 0 };
+    case "stickers":
+      return Array.from({ length: 14 }, (_, i) => ({ id: String(i).padStart(64, "a"), favorite: i < 2, last_used: now - i }));
+    case "sticker_image":
+      return sticker(Number.parseInt(String(args.id).slice(-2), 10) * 26);
+    case "pinned_messages":
+      return args.jid === chats[0].jid ? [messages[chats[0].jid][6]] : [];
+    case "get_ai_ports":
+      return { ollama: 11434, lm_studio: 1234, llama_cpp: 8080 };
     case "app_version":
       return "0.1.2";
     case "get_update_auto":

@@ -42,6 +42,8 @@ pub struct AppState {
     pub managed: tokio::sync::Mutex<Option<notchat_core::managed::Server>>,
     pub managed_busy: std::sync::atomic::AtomicBool,
     pub media: notchat_core::media::MediaCache,
+    /// Files attached to notes; never cleared by the storage screen.
+    pub note_files: notchat_core::media::MediaCache,
     pub avatars: notchat_core::media::AvatarCache,
     /// Limits concurrent profile-picture lookups.
     pub avatar_slots: tokio::sync::Semaphore,

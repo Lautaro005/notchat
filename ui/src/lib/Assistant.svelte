@@ -245,12 +245,12 @@
   }
   header {
     flex: none;
-    height: 52px;
+    height: 58px;
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 0 12px 0 20px;
-    border-bottom: 1px solid var(--line);
+    padding: 0 12px 0 16px;
+    border-bottom: 1px solid var(--line-soft);
   }
   header > div {
     flex: 1;
@@ -258,8 +258,8 @@
     pointer-events: none;
   }
   .mark {
-    width: 30px;
-    height: 30px;
+    width: 36px;
+    height: 36px;
     display: grid;
     place-items: center;
     border-radius: 50%;
@@ -268,7 +268,7 @@
   }
   h1 {
     margin: 0;
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 600;
   }
   header span:not(.mark) {
@@ -285,7 +285,7 @@
     padding: 20px;
   }
   .log > * {
-    max-width: 680px;
+    max-width: 760px;
     margin-inline: auto;
   }
   .intro {
@@ -336,9 +336,9 @@
     display: grid;
     gap: 6px;
     padding: 8px 13px;
-    border-radius: var(--r-l);
-    background: var(--ink);
-    color: var(--on-ink);
+    border-radius: 18px 18px 6px 18px;
+    background: var(--mine);
+    color: var(--on-mine);
     font-size: 14px;
     line-height: 1.4;
   }
@@ -441,12 +441,8 @@
     flex: none;
     padding: 8px 16px 14px;
   }
-  footer > * {
-    max-width: 712px;
-    margin-inline: auto;
-  }
   footer .err {
-    margin: 0 auto 6px;
+    margin: 0 0 6px;
     padding-left: 14px;
   }
   .files {
@@ -475,26 +471,25 @@
   .composer {
     display: flex;
     align-items: flex-end;
-    gap: 4px;
-    padding: 4px;
-    border-radius: var(--r-l);
-    background: var(--bg-2);
-    border: 1px solid var(--line);
-    transition: border-color 160ms var(--ease);
+    gap: 2px;
+    padding: 5px 5px 5px 6px;
+    border-radius: 22px;
+    background: var(--panel);
+    box-shadow: var(--shadow-s), 0 0 0 1px var(--line-soft);
+    transition: box-shadow 160ms var(--ease);
   }
   .composer:focus-within {
-    border-color: var(--text-3);
+    box-shadow: var(--shadow-s), 0 0 0 1px var(--text-3);
   }
   .composer .icon-btn {
-    width: 28px;
-    height: 28px;
     border-radius: 50%;
+    flex: none;
   }
   textarea {
     flex: 1;
     min-width: 0;
-    max-height: 132px;
-    padding: 5px 4px;
+    max-height: 160px;
+    padding: 6px;
     border: 0;
     background: none;
     resize: none;
@@ -510,8 +505,8 @@
   }
   .round {
     flex: none;
-    width: 28px;
-    height: 28px;
+    width: 32px;
+    height: 32px;
     display: grid;
     place-items: center;
     border-radius: 50%;

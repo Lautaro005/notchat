@@ -7,6 +7,7 @@ import {
   type Chat,
   type ChatList,
   type Message,
+  type Note,
   type Release,
   type SendKind,
   type Status,
@@ -54,6 +55,10 @@ export function remember(key: string, value: unknown) {
 
 /** Id used in `app.selected` for the assistant conversation. */
 export const AI = "ai";
+/** Id used in `app.selected` for the private notes chat. */
+export const NOTES = "notes";
+
+export type NotesView = "chat" | "board" | "postits";
 
 export const app = $state({
   status: { link: "starting", qr_svg: null, pair_code: null, error: null } as Status,
@@ -94,6 +99,28 @@ export const app = $state({
     resolve: (value: string | null) => void;
   },
   menu: null as null | { x: number; y: number; items: MenuItem[] },
+  /** The message the composer is replying to, or editing. */
+  reply: null as Message | null,
+  editing: null as Message | null,
+  /** Multi-select mode in the open chat, with the picked message ids. */
+  selecting: false,
+  picked: [] as string[],
+  /** Pinned messages of the open chat. */
+  pinned: [] as Message[],
+  /** Forward dialog: what is being forwarded. */
+  forward: null as null | { jid: string; ids: string[] } | { note: number },
+  lightbox: null as string | null,
+  /** A dialog offering several actions (delete for me / for everyone). */
+  choice: null as null | {
+    title: string;
+    body: string;
+    options: { id: string; label: string; danger?: boolean }[];
+    resolve: (id: string | null) => void;
+  },
+  /** Message shown in the info dialog. */
+  info: null as Message | null,
+  notes: [] as Note[],
+  notesView: stored<NotesView>("notesView", "chat"),
   ai: {
     config: { provider: null, base_url: "", model: "", confirm_send: true, web_access: true } as AiConfig,
     rows: [] as AiRow[],
@@ -183,6 +210,17 @@ export function confirmAction(opts: { title: string; body: string; action: strin
   });
 }
 
+/** Offers a few actions; resolves with the chosen id, or null when cancelled. */
+export function choose(opts: {
+  title: string;
+  body: string;
+  options: { id: string; label: string; danger?: boolean }[];
+}): Promise<string | null> {
+  return new Promise((resolve) => {
+    app.choice = { ...opts, resolve };
+  });
+}
+
 /** Asks for a short piece of text (a list name). */
 export function askText(opts: { title: string; placeholder: string; value?: string; action: string }): Promise<string | null> {
   return new Promise((resolve) => {
@@ -195,17 +233,60 @@ export function openSettings(section = "general") {
   app.settingsOpen = true;
 }
 
+function resetChatState() {
+  app.reply = null;
+  app.editing = null;
+  app.selecting = false;
+  app.picked = [];
+  app.pinned = [];
+}
+
 export async function selectChat(jid: string) {
-  if (app.selected !== jid) app.infoOpen = false;
+  if (app.selected !== jid) {
+    app.infoOpen = false;
+    resetChatState();
+  }
   app.selected = jid;
   app.messages = [];
   if (jid === AI) return;
+  if (jid === NOTES) {
+    app.notes = await api.notes();
+    app.tail++;
+    return;
+  }
+  void refreshPinned(jid);
   const page = await api.messages(jid);
   if (app.selected !== jid) return;
   app.messages = page;
   app.hasOlder = page.length === PAGE;
   app.tail++;
   await api.markRead(jid);
+}
+
+export function closeChat() {
+  resetChatState();
+  app.infoOpen = false;
+  app.selected = null;
+  app.messages = [];
+}
+
+async function refreshPinned(jid: string) {
+  try {
+    const pinned = await api.pinnedMessages(jid);
+    if (app.selected === jid) app.pinned = pinned;
+  } catch {
+    // Pins are a convenience; the conversation still works without them.
+  }
+}
+
+/** Re-reads one message after a reaction, edit, deletion, star or pin. */
+async function refreshMessage(jid: string, id: string) {
+  if (app.selected !== jid) return;
+  const fresh = await api.message(jid, id);
+  const i = app.messages.findIndex((m) => m.id === id);
+  if (fresh && i >= 0) app.messages[i] = fresh;
+  else if (!fresh && i >= 0) app.messages.splice(i, 1);
+  void refreshPinned(jid);
 }
 
 export async function loadOlder() {
@@ -234,7 +315,26 @@ function append(message: Message) {
 export async function send(text: string) {
   const jid = app.selected;
   if (!jid) return;
-  append(await api.sendText(jid, text));
+  if (app.editing) {
+    const target = app.editing;
+    await api.edit(jid, target.id, text);
+    app.editing = null;
+    void refreshMessage(jid, target.id);
+    return;
+  }
+  const reply = app.reply;
+  const message = await api.sendText(jid, text, reply?.id);
+  app.reply = null;
+  append(message);
+}
+
+/** Appends a message this window sent through another path (stickers). */
+export function appendSent(message: Message) {
+  append(message);
+}
+
+export async function refreshNotes() {
+  app.notes = await api.notes();
 }
 
 function readBase64(blob: Blob): Promise<string> {
@@ -258,7 +358,7 @@ export function kindOf(file: File): SendKind {
 /** Sends a file (or a recorded voice note) to the open chat. */
 export async function sendFile(blob: Blob, opts: { name: string; kind: SendKind; caption?: string; seconds?: number }) {
   const jid = app.selected;
-  if (!jid || jid === AI) return;
+  if (!jid || jid === AI || jid === NOTES) return;
   if (blob.size > MAX_FILE) throw new Error("too-big");
   const base64 = await readBase64(blob);
   const mime = (blob.type || "application/octet-stream").split(";")[0];
@@ -337,6 +437,7 @@ export async function init() {
       void api.markRead(m.chat_jid);
     }
   });
+  await on<{ chat_jid: string; id: string }>("message-changed", (c) => void refreshMessage(c.chat_jid, c.id));
   await on<null>("chats-changed", () => {
     refreshChats();
     void refreshLists();

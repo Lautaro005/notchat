@@ -5,22 +5,39 @@
   import Composer from "./Composer.svelte";
   import Icon from "./Icon.svelte";
   import MediaView from "./MediaView.svelte";
+  import ReactBar from "./ReactBar.svelte";
   import VoicePlayer from "./VoicePlayer.svelte";
   import { api } from "./api";
-  import { app, chatTitle, isMuted, loadOlder, openMenu, toast, type MenuItem } from "./app.svelte";
+  import { app, chatTitle, isMuted, loadOlder, openMenu } from "./app.svelte";
   import { chatMenu } from "./chatMenu";
-  import { bytes, dayKey, dayLabel, t, time, type Key } from "./i18n";
+  import {
+    copyText,
+    forward,
+    messageMenu,
+    myReaction,
+    react,
+    remove,
+    star,
+    startReply,
+    toNotes,
+    togglePick,
+  } from "./messageMenu";
+  import { bytes, dayKey, dayLabel, t, tf, time, type Key } from "./i18n";
   import type { Message } from "./api";
 
   let scroller: HTMLElement | undefined = $state();
   let composer: Composer | undefined = $state();
   let files = $state<File[]>([]);
   let dragging = $state(0);
-  let lightbox = $state<string | null>(null);
+  let reacting = $state<{ m: Message; x: number; y: number } | null>(null);
+  let pinIndex = $state(0);
+  let flash = $state<string | null>(null);
 
   const chat = $derived(app.chats.find((c) => c.jid === app.selected) ?? null);
   const title = $derived(chat ? chatTitle(chat) : app.selected ? chatTitle({ jid: app.selected, name: "" }) : "");
   const isGroup = $derived(chat?.is_group ?? app.selected?.endsWith("@g.us") ?? false);
+  const picked = $derived(app.messages.filter((m) => app.picked.includes(m.id)));
+  const pin = $derived(app.pinned.length ? app.pinned[pinIndex % app.pinned.length] : null);
 
   const visual = new Set(["image", "video", "sticker"]);
 
@@ -28,6 +45,12 @@
   $effect(() => {
     void app.tail;
     void tick().then(() => scroller?.scrollTo({ top: scroller.scrollHeight }));
+  });
+
+  $effect(() => {
+    void app.selected;
+    pinIndex = 0;
+    reacting = null;
   });
 
   async function older() {
@@ -42,10 +65,29 @@
     if (scroller && scroller.scrollTop < 120 && app.hasOlder && !app.loadingOlder) void older();
   }
 
+  function nameOf(jid: string, fallback = ""): string {
+    const known = app.chats.find((c) => c.jid === jid);
+    if (known) return chatTitle(known);
+    const seen = app.messages.find((m) => m.sender_jid === jid && m.sender_name);
+    return seen?.sender_name || fallback || chatTitle({ jid, name: "" });
+  }
+
   function sender(m: Message): string {
-    if (m.sender_name) return m.sender_name;
-    const known = app.chats.find((c) => c.jid === m.sender_jid);
-    return known ? chatTitle(known) : chatTitle({ jid: m.sender_jid, name: "" });
+    return m.sender_name || nameOf(m.sender_jid);
+  }
+
+  /** Who wrote the quoted message: "You", the contact, or a group member. */
+  function quoteName(m: Message): string {
+    const original = app.messages.find((x) => x.id === m.quote_id);
+    if (original) return original.from_me ? t("chat.you") : sender(original);
+    if (m.quote_sender === "me") return t("chat.you");
+    if (!isGroup) return title;
+    return m.quote_sender ? nameOf(m.quote_sender) : "";
+  }
+
+  function quotePreview(m: Message): string {
+    if (m.quote_text) return m.quote_text;
+    return m.quote_kind && m.quote_kind !== "text" ? t(`kind.${m.quote_kind}` as Key) : "";
   }
 
   // A stable, low-chroma colour per group member so names are easy to scan.
@@ -53,31 +95,68 @@
     return [...jid].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 360, 11);
   }
 
-  function messageMenu(e: MouseEvent, m: Message) {
-    const items: MenuItem[] = [];
-    if (m.text) {
-      items.push({ label: t("menu.copy"), icon: "doc", action: () => void navigator.clipboard.writeText(m.text) });
+  /** Reactions grouped by emoji, mine first. */
+  function grouped(m: Message): { emoji: string; count: number; mine: boolean }[] {
+    const out = new Map<string, { emoji: string; count: number; mine: boolean }>();
+    for (const r of m.reactions) {
+      const g = out.get(r.emoji) ?? { emoji: r.emoji, count: 0, mine: false };
+      g.count++;
+      g.mine ||= r.from_me;
+      out.set(r.emoji, g);
     }
-    if (m.has_media) {
-      items.push({
-        label: t("menu.save"),
-        icon: "download",
-        action: () =>
-          api
-            .saveMedia(m.chat_jid, m.id)
-            .then(() => toast(t("toast.saved")))
-            .catch(() => toast(t("toast.failed"))),
-      });
+    return [...out.values()].sort((a, b) => Number(b.mine) - Number(a.mine) || b.count - a.count);
+  }
+
+  function sameRun(a: Message | undefined, b: Message | undefined): boolean {
+    return (
+      !!a &&
+      !!b &&
+      dayKey(a.ts) === dayKey(b.ts) &&
+      a.from_me === b.from_me &&
+      a.sender_jid === b.sender_jid &&
+      Math.abs(b.ts - a.ts) < 300
+    );
+  }
+
+  function openReact(m: Message, anchor: HTMLElement) {
+    const r = anchor.getBoundingClientRect();
+    reacting = { m, x: r.left + r.width / 2, y: r.top };
+  }
+
+  function menuFor(e: MouseEvent, m: Message) {
+    if (app.selecting) {
+      e.preventDefault();
+      return;
     }
-    if (items.length) openMenu(e, items);
+    const target = e.currentTarget as HTMLElement;
+    const bubble = target.closest(".msg")?.querySelector<HTMLElement>(".bubble") ?? target;
+    const r = target.getBoundingClientRect();
+    const items = messageMenu(m, () => openReact(m, bubble));
+    if (e.type === "contextmenu") openMenu(e, items);
+    else openMenu({ x: m.from_me ? r.right - 210 : r.left, y: r.bottom + 4 }, items);
+  }
+
+  async function jumpTo(id: string) {
+    const el = document.getElementById(`msg-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    flash = id;
+    setTimeout(() => {
+      if (flash === id) flash = null;
+    }, 1400);
+  }
+
+  function nextPin() {
+    if (!pin) return;
+    void jumpTo(pin.id);
+    pinIndex = (pinIndex + 1) % app.pinned.length;
   }
 
   async function saveDoc(m: Message) {
     try {
       await api.saveMedia(m.chat_jid, m.id);
-      toast(t("toast.saved"));
     } catch {
-      toast(t("toast.failed"));
+      /* the menu offers saving again */
     }
   }
 
@@ -98,13 +177,23 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     openMenu({ x: r.right - 220, y: r.bottom + 6 }, chatMenu(chat, { openInfo: () => (app.infoOpen = true) }));
   }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.key !== "Escape" || e.defaultPrevented) return;
+    if (app.lightbox) {
+      e.preventDefault();
+      app.lightbox = null;
+    }
+  }
 </script>
 
-<svelte:window onkeydown={(e) => e.key === "Escape" && lightbox && (lightbox = null)} />
+<svelte:window onkeydown={onKey} />
 
 {#if !app.selected}
   <section class="blank" data-tauri-drag-region>
-    <div class="mark"><Icon name="send" size={30} /></div>
+    <div class="mark" aria-hidden="true">
+      <span class="b1"></span><span class="b2"></span>
+    </div>
     <strong>{t("chat.pick")}</strong>
     <span>{t("chat.pickHint")}</span>
   </section>
@@ -152,59 +241,149 @@
         {/if}
       </header>
 
-      <div class="log scroll" bind:this={scroller} onscroll={onScroll}>
+      {#if pin}
+        <button class="pinbar" onclick={nextPin} title={t("msg.jump")}>
+          <span class="pinic"><Icon name="pin" size={15} /></span>
+          <span class="pinbody">
+            <b>{app.pinned.length > 1 ? tf("msg.pinnedCount", { i: (pinIndex % app.pinned.length) + 1, n: app.pinned.length }) : t("msg.pinnedBar")}</b>
+            <span>{pin.text || t(`kind.${pin.kind}` as Key)}</span>
+          </span>
+        </button>
+      {/if}
+
+      <div class="log scroll" class:selecting={app.selecting} bind:this={scroller} onscroll={onScroll}>
         {#if app.hasOlder}
           <button class="btn quiet older" onclick={older} disabled={app.loadingOlder}>{t("chat.older")}</button>
         {/if}
         {#each app.messages as m, i (m.id)}
           {@const prev = app.messages[i - 1]}
+          {@const next = app.messages[i + 1]}
           {#if !prev || dayKey(prev.ts) !== dayKey(m.ts)}
             <div class="day"><span>{dayLabel(m.ts)}</span></div>
           {/if}
-          {@const joined = prev && dayKey(prev.ts) === dayKey(m.ts) && prev.from_me === m.from_me && prev.sender_jid === m.sender_jid && m.ts - prev.ts < 300}
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          {@const first = !sameRun(prev, m)}
+          {@const last = !sameRun(m, next)}
+          {@const reactions = grouped(m)}
+          {@const isPicked = app.picked.includes(m.id)}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions, a11y_click_events_have_key_events -->
           <article
+            id="msg-{m.id}"
             class="msg"
             class:me={m.from_me}
-            class:joined
+            class:first
+            class:last
             class:fresh={m.id === app.fresh}
-            oncontextmenu={(e) => messageMenu(e, m)}
+            class:flash={flash === m.id}
+            class:picked={isPicked}
+            class:reacted={reactions.length > 0}
+            oncontextmenu={(e) => menuFor(e, m)}
+            onclick={() => app.selecting && togglePick(m.id)}
           >
-            <div
-              class="bubble"
-              class:visual={visual.has(m.kind) && !m.text}
-              class:sticker={m.kind === "sticker"}
-              class:tail={!joined}
-            >
-              {#if isGroup && !m.from_me && !joined}
-                <span class="who" style:--h={hue(m.sender_jid)}>{sender(m)}</span>
+            {#if app.selecting}
+              <span class="tick" class:on={isPicked} aria-hidden="true"><Icon name="check" size={13} /></span>
+            {/if}
+            <div class="lane">
+              <div
+                class="bubble"
+                class:visual={visual.has(m.kind) && !m.text && !m.quote_id && !m.deleted}
+                class:sticker={m.kind === "sticker" && !m.deleted}
+                class:gone={m.deleted}
+              >
+                {#if isGroup && !m.from_me && first}
+                  <span class="who" style:--h={hue(m.sender_jid)}>{sender(m)}</span>
+                {/if}
+                {#if m.deleted}
+                  <span class="deleted"><Icon name="close" size={13} />{t("msg.deleted")}</span>
+                {:else}
+                  {#if m.forwarded}
+                    <span class="fwd"><Icon name="forward" size={13} />{t("msg.forwarded")}</span>
+                  {/if}
+                  {#if m.quote_id}
+                    <button class="quote" onclick={(e) => { e.stopPropagation(); void jumpTo(m.quote_id); }} title={t("msg.jump")}>
+                      <b>{quoteName(m)}</b>
+                      <span>{quotePreview(m)}</span>
+                    </button>
+                  {/if}
+                  {#if visual.has(m.kind)}
+                    <MediaView {m} onopen={(src) => (app.lightbox = src)} />
+                  {:else if m.kind === "voice" || m.kind === "audio"}
+                    <VoicePlayer {m} />
+                  {:else if m.kind === "document"}
+                    <button class="doc" onclick={() => saveDoc(m)} disabled={!m.has_media} title={t("menu.save")}>
+                      <span class="doc-ic"><Icon name="doc" size={20} /><b>{extOf(m)}</b></span>
+                      <span class="doc-meta">
+                        <span class="doc-name">{m.file_name || t("kind.document")}</span>
+                        <small class="num">{[m.size ? bytes(m.size) : "", extOf(m)].filter(Boolean).join(" · ")}</small>
+                      </span>
+                      {#if m.has_media}<Icon name="download" size={17} />{/if}
+                    </button>
+                  {:else if m.kind !== "text"}
+                    <span class="kind">{t(`kind.${m.kind}` as Key)}</span>
+                  {/if}
+                  {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{m.text}</span>{/if}
+                {/if}
+                <span class="meta num">
+                  {#if m.starred}<Icon name="star" size={11} />{/if}
+                  {#if m.pinned > 0}<Icon name="pin" size={11} />{/if}
+                  {#if m.edited && !m.deleted}<span>{t("msg.edited")}</span>{/if}
+                  {#if m.by_ai}<span class="ai"><Icon name="spark" size={11} /></span>{/if}
+                  {time(m.ts)}
+                </span>
+                {#if !app.selecting}
+                  <button class="chev" aria-label={t("msg.more")} onclick={(e) => { e.stopPropagation(); menuFor(e, m); }}>
+                    <Icon name="chevron" size={14} />
+                  </button>
+                {/if}
+              </div>
+              {#if reactions.length}
+                <div class="reactions">
+                  {#each reactions as r (r.emoji)}
+                    <button class="rx" class:mine={r.mine} aria-pressed={r.mine} onclick={(e) => { e.stopPropagation(); react(m, r.emoji); }}>
+                      <span>{r.emoji}</span>{#if r.count > 1}<small class="num">{r.count}</small>{/if}
+                    </button>
+                  {/each}
+                </div>
               {/if}
-              {#if visual.has(m.kind)}
-                <MediaView {m} onopen={(src) => (lightbox = src)} />
-              {:else if m.kind === "voice" || m.kind === "audio"}
-                <VoicePlayer {m} />
-              {:else if m.kind === "document"}
-                <button class="doc" onclick={() => saveDoc(m)} disabled={!m.has_media} title={t("menu.save")}>
-                  <span class="doc-ic"><Icon name="doc" size={20} /><b>{extOf(m)}</b></span>
-                  <span class="doc-meta">
-                    <span class="doc-name">{m.file_name || t("kind.document")}</span>
-                    <small class="num">{[m.size ? bytes(m.size) : "", extOf(m)].filter(Boolean).join(" · ")}</small>
-                  </span>
-                  {#if m.has_media}<Icon name="download" size={17} />{/if}
-                </button>
-              {:else if m.kind !== "text"}
-                <span class="kind">{t(`kind.${m.kind}` as Key)}</span>
-              {/if}
-              {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{m.text}</span>{/if}
-              <time class="num">
-                {#if m.by_ai}<Icon name="spark" size={11} />{/if}{time(m.ts)}
-              </time>
             </div>
+            {#if !app.selecting && !m.deleted}
+              <div class="hover-acts">
+                <button aria-label={t("msg.react")} title={t("msg.react")} onclick={(e) => { e.stopPropagation(); openReact(m, e.currentTarget); }}>
+                  <Icon name="smile" size={16} />
+                </button>
+                <button aria-label={t("msg.reply")} title={t("msg.reply")} onclick={(e) => { e.stopPropagation(); startReply(m); }}>
+                  <Icon name="reply" size={16} />
+                </button>
+              </div>
+            {/if}
           </article>
         {/each}
       </div>
 
-      <Composer bind:this={composer} bind:files />
+      {#if app.selecting}
+        <div class="selbar" role="toolbar" aria-label={tf("msg.selected", { n: picked.length })}>
+          <button class="icon-btn" onclick={() => { app.selecting = false; app.picked = []; }} aria-label={t("msg.cancelSelect")} title={t("msg.cancelSelect")}>
+            <Icon name="close" size={18} />
+          </button>
+          <span class="count">{tf("msg.selected", { n: picked.length })}</span>
+          <button class="icon-btn" disabled={!picked.some((m) => m.text)} onclick={() => copyText(picked)} aria-label={t("msg.copy")} title={t("msg.copy")}>
+            <Icon name="copy" size={18} />
+          </button>
+          <button class="icon-btn" disabled={!picked.length} onclick={() => star(picked, !picked.every((m) => m.starred))} aria-label={t("msg.star")} title={t("msg.star")}>
+            <Icon name="star" size={18} />
+          </button>
+          <button class="icon-btn" disabled={!picked.length} onclick={() => toNotes(picked)} aria-label={t("msg.toNotes")} title={t("msg.toNotes")}>
+            <Icon name="note" size={18} />
+          </button>
+          <button class="icon-btn" disabled={!picked.length || picked.some((m) => m.deleted)} onclick={() => forward(picked)} aria-label={t("msg.forward")} title={t("msg.forward")}>
+            <Icon name="forward" size={18} />
+          </button>
+          <button class="icon-btn danger" disabled={!picked.length} onclick={() => remove(picked)} aria-label={t("msg.delete")} title={t("msg.delete")}>
+            <Icon name="trash" size={18} />
+          </button>
+        </div>
+      {:else}
+        <Composer bind:this={composer} bind:files />
+      {/if}
 
       {#if dragging > 0}
         <div class="drop" aria-hidden="true">
@@ -219,10 +398,15 @@
   </div>
 {/if}
 
-{#if lightbox}
+{#if reacting}
+  {@const target = reacting.m}
+  <ReactBar x={reacting.x} y={reacting.y} current={myReaction(target)} onpick={(e) => react(target, e)} onclose={() => (reacting = null)} />
+{/if}
+
+{#if app.lightbox}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-  <div class="lightbox" onclick={() => (lightbox = null)}>
-    <img src={lightbox} alt="" />
+  <div class="lightbox" onclick={() => (app.lightbox = null)}>
+    <img src={app.lightbox} alt="" />
     <button class="icon-btn close" aria-label={t("chat.close")}><Icon name="close" size={20} /></button>
   </div>
 {/if}
@@ -233,7 +417,7 @@
     flex: 1;
     min-width: 0;
     margin: 8px 8px 8px 0;
-    border-radius: 14px;
+    border-radius: 16px;
     background: var(--bg);
     box-shadow: var(--shadow-s), 0 0 0 0.5px var(--line);
     overflow: hidden;
@@ -244,20 +428,34 @@
     justify-items: center;
     gap: 4px;
     color: var(--text-2);
-    background-image: radial-gradient(var(--wall-dot) 1px, transparent 1.2px);
-    background-size: 18px 18px;
+    background-image: var(--wall);
   }
-  .blank .mark {
-    width: 64px;
+  .mark {
+    position: relative;
+    width: 84px;
     height: 64px;
-    margin-bottom: 14px;
-    display: grid;
-    place-items: center;
-    border-radius: 20px;
-    background: var(--ink);
-    color: var(--on-ink);
-    transform: rotate(-6deg);
-    box-shadow: var(--shadow);
+    margin-bottom: 18px;
+  }
+  .mark span {
+    position: absolute;
+    height: 30px;
+    border-radius: 15px;
+    box-shadow: var(--shadow-s);
+  }
+  .mark .b1 {
+    left: 0;
+    top: 0;
+    width: 58px;
+    background: var(--bubble);
+    box-shadow: var(--shadow-s), 0 0 0 1px var(--bubble-line);
+    border-top-left-radius: 6px;
+  }
+  .mark .b2 {
+    right: 0;
+    bottom: 0;
+    width: 66px;
+    background: var(--mine);
+    border-bottom-right-radius: 6px;
   }
   .blank strong {
     font-family: var(--rounded);
@@ -288,8 +486,7 @@
     display: flex;
     flex-direction: column;
     min-height: 0;
-    background-image: radial-gradient(var(--wall-dot) 1px, transparent 1.2px);
-    background-size: 18px 18px;
+    background-image: var(--wall);
   }
   header {
     flex: none;
@@ -298,8 +495,8 @@
     align-items: center;
     gap: 4px;
     padding: 0 10px 0 8px;
-    background: color-mix(in srgb, var(--bg) 88%, transparent);
-    backdrop-filter: blur(16px) saturate(1.4);
+    background: color-mix(in srgb, var(--bg) 86%, transparent);
+    backdrop-filter: blur(18px) saturate(1.4);
     border-bottom: 1px solid var(--line-soft);
     z-index: 2;
   }
@@ -358,10 +555,54 @@
     color: var(--on-accent);
     box-shadow: none;
   }
+
+  /* ---- pinned bar ---- */
+  .pinbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line-soft);
+    background: color-mix(in srgb, var(--bg) 92%, transparent);
+    text-align: left;
+    z-index: 1;
+  }
+  .pinbar:hover {
+    background: var(--bg-2);
+  }
+  .pinic {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .pinbody {
+    min-width: 0;
+    display: grid;
+    font-size: 12.5px;
+  }
+  .pinbody b {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .pinbody span {
+    color: var(--text-2);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* ---- log ---- */
   .log {
     flex: 1;
     min-height: 0;
-    padding: 12px 6% 10px;
+    padding: 12px clamp(14px, 5%, 64px) 12px;
     display: flex;
     flex-direction: column;
   }
@@ -374,34 +615,48 @@
   }
   .day {
     position: sticky;
-    top: 4px;
+    top: 6px;
     z-index: 1;
     align-self: center;
-    margin: 14px 0 8px;
+    margin: 16px 0 6px;
   }
   .day span {
     display: block;
-    padding: 4px 11px;
+    padding: 4px 12px;
     border-radius: 999px;
-    background: var(--panel);
-    box-shadow: var(--shadow-s);
+    background: color-mix(in srgb, var(--panel) 90%, transparent);
+    backdrop-filter: blur(10px);
+    box-shadow: var(--shadow-s), 0 0 0 0.5px var(--line-soft);
     font-size: 11px;
     font-weight: 600;
     color: var(--text-2);
   }
+
+  /* A run of messages from the same sender sits 3px apart; runs sit 14px
+     apart. Corners show where a run starts and ends. */
   .msg {
+    position: relative;
     display: flex;
-    justify-content: flex-start;
-    margin-top: 8px;
+    align-items: center;
+    gap: 8px;
+    margin-top: 3px;
+    border-radius: 12px;
+    transition: background 200ms var(--ease);
+  }
+  .msg.first {
+    margin-top: 14px;
+  }
+  .msg.reacted {
+    margin-bottom: 18px;
   }
   .msg.me {
-    justify-content: flex-end;
+    flex-direction: row-reverse;
   }
-  .msg.joined {
-    margin-top: 2px;
+  .msg.me .lane {
+    align-items: flex-end;
   }
-  .msg.fresh {
-    animation: rise 240ms var(--ease);
+  .msg.fresh .lane {
+    animation: rise 260ms var(--ease);
   }
   @keyframes rise {
     from {
@@ -409,35 +664,56 @@
       transform: translateY(8px) scale(0.98);
     }
   }
-  .bubble {
+  .msg.flash .bubble {
+    animation: flash 1.3s var(--ease);
+  }
+  @keyframes flash {
+    0%,
+    40% {
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 55%, transparent);
+    }
+  }
+  .lane {
     position: relative;
-    max-width: min(70%, 560px);
-    padding: 7px 11px;
-    border-radius: 18px;
+    max-width: min(72%, 580px);
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .bubble {
+    --r: 18px;
+    --rs: 6px;
+    position: relative;
+    max-width: 100%;
+    padding: 7px 12px 7px;
+    border-radius: var(--rs) var(--r) var(--r) var(--rs);
     background: var(--bubble);
-    box-shadow: 0 1px 1px rgb(0 0 0 / 0.04), 0 0 0 1px var(--bubble-line);
+    box-shadow: 0 1px 1.5px rgb(20 10 60 / 0.05), 0 0 0 1px var(--bubble-line);
     font-size: 14px;
-    line-height: 1.38;
+    line-height: 1.4;
     user-select: text;
     -webkit-user-select: text;
     cursor: text;
   }
-  .bubble.tail {
-    border-top-left-radius: 6px;
+  /* Joined edges stay tight; the run's last bubble keeps a small bottom
+     corner as its tail. */
+  .first .bubble {
+    border-top-left-radius: var(--r);
   }
   .me .bubble {
-    background: var(--ink);
-    color: var(--on-ink);
-    box-shadow: 0 1px 2px rgb(0 0 0 / 0.12);
+    border-radius: var(--r) var(--rs) var(--rs) var(--r);
+    background: var(--mine);
+    color: var(--on-mine);
+    box-shadow: 0 1px 2px rgb(30 15 110 / 0.18);
   }
-  .me .bubble.tail {
-    border-top-left-radius: 18px;
-    border-top-right-radius: 6px;
+  .me.first .bubble {
+    border-top-right-radius: var(--r);
   }
   .bubble.visual {
     padding: 4px;
   }
-  .bubble.visual time {
+  .bubble.visual .meta {
     position: absolute;
     right: 10px;
     bottom: 9px;
@@ -452,15 +728,74 @@
     background: none;
     box-shadow: none;
   }
+  .bubble.sticker .meta {
+    background: color-mix(in srgb, var(--panel) 85%, transparent);
+    color: var(--text-2);
+  }
+  .bubble.gone {
+    background: transparent;
+    color: var(--text-3);
+    box-shadow: inset 0 0 0 1px var(--line);
+  }
+  .me .bubble.gone {
+    color: var(--text-3);
+  }
   .bubble.visual .who {
-    margin: 3px 7px 5px;
+    margin: 3px 8px 5px;
   }
   .who {
     display: block;
     margin-bottom: 2px;
     font-size: 12px;
     font-weight: 600;
-    color: oklch(0.55 0.13 var(--h));
+    color: oklch(0.56 0.14 var(--h));
+  }
+  .fwd,
+  .deleted {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-style: italic;
+    opacity: 0.72;
+  }
+  .fwd {
+    margin-bottom: 2px;
+  }
+  .deleted {
+    font-size: 13px;
+  }
+  .quote {
+    width: 100%;
+    min-width: 160px;
+    display: grid;
+    gap: 1px;
+    margin: 2px 0 5px;
+    padding: 6px 10px;
+    border-radius: 10px;
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    text-align: left;
+    font-size: 12.5px;
+    line-height: 1.35;
+    transition: background 140ms var(--ease);
+  }
+  .quote:hover {
+    background: color-mix(in srgb, currentColor 13%, transparent);
+  }
+  .quote b {
+    font-weight: 600;
+    color: var(--accent);
+  }
+  .me .quote b {
+    color: inherit;
+  }
+  .quote span {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    opacity: 0.8;
   }
   .text {
     white-space: pre-wrap;
@@ -468,26 +803,182 @@
   }
   .text.aftermedia {
     display: block;
-    padding: 6px 7px 0;
+    padding: 6px 8px 0;
   }
   .kind {
     font-style: italic;
     opacity: 0.75;
   }
-  time {
+  .meta {
     float: right;
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    margin: 7px 0 -3px 10px;
+    margin: 7px 0 -3px 12px;
     font-size: 10.5px;
-    opacity: 0.6;
+    opacity: 0.62;
     user-select: none;
     -webkit-user-select: none;
   }
-  time :global(svg) {
+  .me .meta {
+    color: var(--mine-2);
+    opacity: 1;
+  }
+  .meta .ai {
+    display: inline-grid;
     color: var(--accent);
   }
+  .me .meta .ai {
+    color: inherit;
+  }
+
+  /* ---- hover affordances ---- */
+  .chev {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 22px;
+    height: 22px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    transform: rotate(90deg);
+    color: inherit;
+    background: radial-gradient(circle, var(--bubble) 55%, transparent 72%);
+    opacity: 0;
+    transition: opacity 120ms var(--ease);
+  }
+  .me .chev {
+    background: radial-gradient(circle, var(--mine) 55%, transparent 72%);
+  }
+  .bubble.visual .chev,
+  .bubble.sticker .chev {
+    background: rgb(0 0 0 / 0.42);
+    color: #fff;
+  }
+  .msg:hover .chev,
+  .chev:focus-visible {
+    opacity: 1;
+  }
+  .hover-acts {
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    transition: opacity 120ms var(--ease);
+  }
+  .hover-acts button {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: var(--text-3);
+  }
+  .hover-acts button:hover {
+    background: var(--bg-3);
+    color: var(--text);
+  }
+  .msg:hover .hover-acts,
+  .hover-acts:focus-within {
+    opacity: 1;
+  }
+
+  /* ---- reactions ---- */
+  .reactions {
+    position: absolute;
+    bottom: -15px;
+    left: 10px;
+    display: flex;
+    gap: 3px;
+    z-index: 1;
+  }
+  .me .reactions {
+    left: auto;
+    right: 10px;
+  }
+  .rx {
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 0 7px;
+    border-radius: 12px;
+    background: var(--panel);
+    box-shadow: var(--shadow-s), 0 0 0 1px var(--line-soft);
+    font-size: 13px;
+    line-height: 1;
+    transition: transform 140ms var(--ease);
+  }
+  .rx:hover {
+    transform: translateY(-1px);
+  }
+  .rx.mine {
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  .rx small {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-2);
+  }
+
+  /* ---- selection ---- */
+  .log.selecting .msg {
+    cursor: default;
+    padding: 0 6px;
+  }
+  .log.selecting .bubble {
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .msg.picked {
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .tick {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    color: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--text-3);
+    transition: background 120ms var(--ease);
+  }
+  .tick.on {
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: none;
+  }
+  .msg.me .tick {
+    order: 1;
+  }
+  .selbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    margin: 8px 16px 14px;
+    padding: 6px 8px;
+    border-radius: 22px;
+    background: var(--panel);
+    box-shadow: var(--shadow-s), 0 0 0 1px var(--line-soft);
+    animation: rise 200ms var(--ease);
+  }
+  .selbar .count {
+    flex: 1;
+    padding-left: 6px;
+    font-weight: 600;
+  }
+  .selbar .icon-btn {
+    border-radius: 50%;
+  }
+  .icon-btn.danger {
+    color: var(--danger);
+  }
+
+  /* ---- document ---- */
   .doc {
     width: 270px;
     max-width: 100%;
@@ -497,11 +988,11 @@
     margin: 2px 0;
     padding: 8px 10px 8px 8px;
     border-radius: 12px;
-    background: color-mix(in srgb, currentColor 7%, transparent);
+    background: color-mix(in srgb, currentColor 8%, transparent);
     text-align: left;
   }
   .doc:hover:not(:disabled) {
-    background: color-mix(in srgb, currentColor 12%, transparent);
+    background: color-mix(in srgb, currentColor 13%, transparent);
   }
   .doc-ic {
     position: relative;
@@ -513,6 +1004,10 @@
     border-radius: 8px;
     background: var(--accent);
     color: var(--on-accent);
+  }
+  .me .doc-ic {
+    background: var(--on-mine);
+    color: var(--mine);
   }
   .doc-ic b {
     position: absolute;
@@ -537,7 +1032,7 @@
   }
   .doc-meta small {
     font-size: 11px;
-    opacity: 0.65;
+    opacity: 0.7;
   }
   .drop {
     position: absolute;
@@ -571,7 +1066,7 @@
     display: grid;
     place-items: center;
     padding: 48px;
-    background: rgb(10 9 8 / 0.86);
+    background: rgb(10 8 20 / 0.86);
     animation: fadein 160ms var(--ease);
     cursor: zoom-out;
   }

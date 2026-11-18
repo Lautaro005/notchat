@@ -1,8 +1,9 @@
 <script lang="ts">
   import { tick } from "svelte";
   import ContextMenu from "./ContextMenu.svelte";
-  import { app } from "./app.svelte";
-  import { t } from "./i18n";
+  import ForwardDialog from "./ForwardDialog.svelte";
+  import { app, chatTitle } from "./app.svelte";
+  import { t, time, dayLabel } from "./i18n";
 
   let promptInput: HTMLInputElement | undefined = $state();
   let confirmBtn: HTMLButtonElement | undefined = $state();
@@ -24,10 +25,26 @@
     app.prompt = null;
   }
 
+  function closeChoice(id: string | null) {
+    app.choice?.resolve(id);
+    app.choice = null;
+  }
+
   function onKey(e: KeyboardEvent) {
     if (e.key !== "Escape") return;
     if (app.confirm) closeConfirm(false);
     else if (app.prompt) closePrompt(null);
+    else if (app.choice) closeChoice(null);
+    else if (app.info) app.info = null;
+    else if (app.forward) app.forward = null;
+    else return;
+    e.preventDefault();
+  }
+
+  function who(jid: string): string {
+    if (jid === "me") return t("chat.you");
+    const c = app.chats.find((x) => x.jid === jid);
+    return c ? chatTitle(c) : chatTitle({ jid, name: "" });
   }
 </script>
 
@@ -73,6 +90,57 @@
     </form>
     </div>
   </div>
+{/if}
+
+{#if app.choice}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && closeChoice(null)}>
+    <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="ch-title" aria-describedby="ch-body">
+      <h2 id="ch-title">{app.choice.title}</h2>
+      <p id="ch-body">{app.choice.body}</p>
+      <div class="stacked">
+        {#each app.choice.options as o (o.id)}
+          <button class="btn" class:danger={o.danger} onclick={() => closeChoice(o.id)}>{o.label}</button>
+        {/each}
+        <button class="btn quiet" onclick={() => closeChoice(null)}>{t("action.cancel")}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if app.info}
+  {@const m = app.info}
+  <div class="scrim" role="presentation" onclick={(e) => e.target === e.currentTarget && (app.info = null)}>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="in-title">
+      <h2 id="in-title">{t("msg.info")}</h2>
+      <dl>
+        <dt>{m.from_me ? t("msg.sent") : t("msg.received")}</dt>
+        <dd>{dayLabel(m.ts)}, {time(m.ts)}</dd>
+        {#if !m.from_me && m.sender_jid}
+          <dt>{t("info.contact")}</dt>
+          <dd>{m.sender_name || who(m.sender_jid)}</dd>
+        {/if}
+        {#if m.edited || m.forwarded || m.starred}
+          <dt>&nbsp;</dt>
+          <dd>{[m.edited ? t("msg.edited") : "", m.forwarded ? t("msg.forwarded") : "", m.starred ? t("msg.star") : ""].filter(Boolean).join(" · ")}</dd>
+        {/if}
+        {#if m.reactions.length}
+          <dt>{t("msg.reactions")}</dt>
+          <dd>
+            {#each m.reactions as r (r.sender_jid)}
+              <span class="rxline"><span>{r.emoji}</span>{r.from_me ? t("chat.you") : who(r.sender_jid)}</span>
+            {/each}
+          </dd>
+        {/if}
+      </dl>
+      <div class="acts">
+        <button class="btn primary" onclick={() => (app.info = null)}>{t("storage.done")}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if app.forward}
+  <ForwardDialog />
 {/if}
 
 {#if app.toast}
@@ -147,6 +215,33 @@
     display: flex;
     justify-content: flex-end;
     gap: 6px;
+  }
+  .stacked {
+    display: grid;
+    gap: 6px;
+  }
+  .stacked .btn {
+    height: 36px;
+  }
+  dl {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 8px 14px;
+    margin: 12px 0 18px;
+    font-size: 13px;
+  }
+  dt {
+    color: var(--text-3);
+  }
+  dd {
+    margin: 0;
+    display: grid;
+    gap: 4px;
+  }
+  .rxline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
   .toast {
     position: fixed;

@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import {
     AI,
+    NOTES,
     app,
     applyTheme,
     chatTitle,
@@ -46,12 +47,23 @@
   const showAi = $derived(!app.archived && app.filter === "all" && !query.trim());
 
   /** Media-only messages are stored as "[kind]"; show them in the user's language. */
-  function preview(text: string): { icon: string | null; text: string } {
+  function preview(text: string): { icon: string | null; text: string; italic: boolean } {
+    if (text === "[deleted]") return { icon: null, text: t("msg.deleted"), italic: true };
     const kind = /^\[(image|video|audio|voice|document|sticker)\]$/.exec(text)?.[1];
-    if (!kind) return { icon: null, text };
-    const icons: Record<string, string> = { image: "image", video: "camera", audio: "mic", voice: "mic", document: "doc", sticker: "smile" };
+    if (!kind) return { icon: null, text, italic: false };
+    const icons: Record<string, string> = { image: "image", video: "camera", audio: "mic", voice: "mic", document: "doc", sticker: "sticker" };
     const icon = icons[kind] ?? null;
-    return { icon, text: t(`kind.${kind}` as Key) };
+    return { icon, text: t(`kind.${kind}` as Key), italic: false };
+  }
+
+  /** In groups the preview says who wrote the last message. */
+  function author(chat: Chat): string {
+    if (!chat.is_group || !chat.last_preview) return "";
+    if (chat.last_from_me) return t("chat.you");
+    const name = chat.last_sender;
+    if (!name) return "";
+    if (name.includes("@")) return chatTitle({ jid: name, name: "" });
+    return name;
   }
 
   function emptyText(): string {
@@ -181,7 +193,16 @@
         <span class="aimark"><Icon name="spark" size={19} /></span>
         <span class="body">
           <span class="top"><span class="name">{t("ai.name")}</span></span>
-          <span class="bottom"><span class="preview">{app.ai.config.model || t("ai.sub")}</span></span>
+          <span class="bottom"><span class="preview"><span class="ptext">{app.ai.config.model || t("ai.sub")}</span></span></span>
+        </span>
+      </button>
+    {/if}
+    {#if showAi}
+      <button class="row" class:active={app.selected === NOTES} onclick={() => selectChat(NOTES)}>
+        <span class="notesmark"><Icon name="note" size={19} /></span>
+        <span class="body">
+          <span class="top"><span class="name">{t("notes.name")}</span></span>
+          <span class="bottom"><span class="preview"><span class="ptext">{t("notes.sub")}</span></span></span>
         </span>
       </button>
     {/if}
@@ -195,6 +216,7 @@
 
     {#each visible as chat (chat.jid)}
       {@const p = preview(chat.last_preview)}
+      {@const by = author(chat)}
       {@const unread = isUnread(chat)}
       <div class="rowwrap">
         <button
@@ -211,8 +233,9 @@
               <time class="num">{stamp(chat.last_ts)}</time>
             </span>
             <span class="bottom">
-              <span class="preview">
-                {#if p.icon}<Icon name={p.icon as never} size={13} />{/if}{p.text}
+              <span class="preview" class:italic={p.italic}>
+                {#if by}<span class="by">{by}:</span>{/if}
+                {#if p.icon}<Icon name={p.icon as never} size={13} />{/if}<span class="ptext">{p.text}</span>
               </span>
               <span class="marks">
                 {#if isMuted(chat)}<span class="mark" title={t("chat.muted")}><Icon name="mute" size={14} /></span>{/if}
@@ -387,8 +410,8 @@
     background: var(--bg-3);
   }
   .chip[aria-selected="true"] {
-    background: var(--ink);
-    color: var(--on-ink);
+    background: var(--accent);
+    color: var(--on-accent);
     box-shadow: none;
   }
   .chip.add {
@@ -454,7 +477,9 @@
   }
   .row {
     width: 100%;
+    min-width: 0;
     height: 68px;
+    overflow: hidden;
     display: flex;
     align-items: center;
     gap: 12px;
@@ -474,6 +499,7 @@
     flex: 1;
     min-width: 0;
     display: grid;
+    grid-template-columns: minmax(0, 1fr);
     gap: 3px;
   }
   .top,
@@ -507,9 +533,23 @@
     gap: 4px;
     color: var(--text-2);
     font-size: 12.5px;
-    overflow: hidden;
     white-space: nowrap;
+  }
+  .preview.italic .ptext {
+    font-style: italic;
+  }
+  .ptext {
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .by {
+    flex: none;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: 500;
+    color: var(--text);
   }
   .preview :global(svg) {
     flex: none;
@@ -575,6 +615,7 @@
     color: var(--text);
   }
   .aimark,
+  .notesmark,
   .archmark {
     flex: none;
     width: 44px;
@@ -586,6 +627,11 @@
   .aimark {
     background: var(--accent);
     color: var(--on-accent);
+  }
+  .notesmark {
+    background: var(--note-yellow);
+    color: var(--note-ink);
+    border-radius: 14px;
   }
   .archived-row {
     height: 48px;

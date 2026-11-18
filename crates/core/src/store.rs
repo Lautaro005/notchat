@@ -28,6 +28,11 @@ pub struct Chat {
     pub muted_until: i64,
     #[serde(default)]
     pub marked_unread: bool,
+    /// Who sent the last message, for group previews. Empty when it was me.
+    #[serde(default)]
+    pub last_sender: String,
+    #[serde(default)]
+    pub last_from_me: bool,
 }
 
 /// A user-made group of chats ("list"), stored only on this Mac.
@@ -72,6 +77,65 @@ pub struct Message {
     /// True when the media can be downloaded (its keys are stored).
     #[serde(default)]
     pub has_media: bool,
+    /// The message this one replies to, when it is a reply.
+    #[serde(default)]
+    pub quote_id: String,
+    #[serde(default)]
+    pub quote_sender: String,
+    #[serde(default)]
+    pub quote_text: String,
+    #[serde(default)]
+    pub quote_kind: String,
+    #[serde(default)]
+    pub forwarded: bool,
+    #[serde(default)]
+    pub edited: bool,
+    /// Deleted for everyone: shown as a placeholder.
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub starred: bool,
+    /// Pin timestamp; 0 when not pinned.
+    #[serde(default)]
+    pub pinned: i64,
+    #[serde(default)]
+    pub reactions: Vec<Reaction>,
+}
+
+/// One person's reaction to a message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Reaction {
+    pub emoji: String,
+    pub sender_jid: String,
+    pub from_me: bool,
+}
+
+/// A sticker the account has used or received, ready to send again.
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
+pub struct Sticker {
+    /// Hex SHA-256 of the sticker file: stable id across chats.
+    pub id: String,
+    pub favorite: bool,
+    pub last_used: i64,
+    #[serde(skip)]
+    pub media: Vec<u8>,
+}
+
+/// A note in the private notes chat. Never sent anywhere.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Note {
+    pub id: i64,
+    pub text: String,
+    /// Post-it colour name: "", "yellow", "pink", "blue", "green", "violet".
+    pub color: String,
+    pub pinned: bool,
+    pub done: bool,
+    pub ts: i64,
+    /// "text" or a media kind when a file is attached.
+    pub kind: String,
+    pub mime: String,
+    pub file_name: String,
+    pub size: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +152,11 @@ pub struct AiMessage {
 pub struct Store {
     conn: Mutex<Connection>,
 }
+
+/// Columns read by [`row_to_message`], in order.
+const MSG_COLS: &str = "id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
+    mime,file_name,size,seconds,media IS NOT NULL,quote_id,quote_sender,quote_text,
+    quote_kind,forwarded,edited,deleted,starred,pinned";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS chats (
@@ -134,6 +203,33 @@ CREATE TABLE IF NOT EXISTS list_members (
   jid TEXT NOT NULL,
   PRIMARY KEY (list_id, jid)
 );
+CREATE TABLE IF NOT EXISTS reactions (
+  chat_jid TEXT NOT NULL,
+  msg_id TEXT NOT NULL,
+  sender_jid TEXT NOT NULL,
+  from_me INTEGER NOT NULL DEFAULT 0,
+  emoji TEXT NOT NULL,
+  ts INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (chat_jid, msg_id, sender_jid)
+);
+CREATE TABLE IF NOT EXISTS stickers (
+  id TEXT PRIMARY KEY,
+  media BLOB NOT NULL,
+  last_used INTEGER NOT NULL DEFAULT 0,
+  favorite INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS notes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  text TEXT NOT NULL DEFAULT '',
+  color TEXT NOT NULL DEFAULT '',
+  pinned INTEGER NOT NULL DEFAULT 0,
+  done INTEGER NOT NULL DEFAULT 0,
+  ts INTEGER NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'text',
+  mime TEXT NOT NULL DEFAULT '',
+  file_name TEXT NOT NULL DEFAULT '',
+  size INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -167,8 +263,15 @@ impl Store {
                          ELSE COALESCE(NULLIF(ct.name, ''), NULLIF(ct.push_name, ''), '') END
                       AS name,
                     c.is_group, c.last_ts, c.last_preview, c.unread, c.auto_reply,
-                    c.instructions, c.archived, c.pinned, c.muted_until, c.marked_unread
-             FROM chats c LEFT JOIN contacts ct ON ct.jid = c.jid;",
+                    c.instructions, c.archived, c.pinned, c.muted_until, c.marked_unread,
+                    CASE WHEN c.last_from_me THEN ''
+                         ELSE COALESCE(NULLIF(sc.name, ''), NULLIF(sc.push_name, ''),
+                                       NULLIF(c.last_sender_name, ''), c.last_sender) END
+                      AS last_sender,
+                    c.last_from_me
+             FROM chats c
+             LEFT JOIN contacts ct ON ct.jid = c.jid
+             LEFT JOIN contacts sc ON sc.jid = c.last_sender;",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -272,7 +375,7 @@ impl Store {
     /// Stores a message and updates its chat summary. Returns `false` when the
     /// message was already stored (redelivery), so callers can skip side effects.
     pub fn insert_message(&self, m: &Message, is_group: bool) -> Result<bool> {
-        self.insert_message_full(m, is_group, None, true)
+        self.insert_message_full(m, is_group, None, None, true)
     }
 
     /// Like [`insert_message`](Self::insert_message), also storing the encoded
@@ -283,6 +386,7 @@ impl Store {
         m: &Message,
         is_group: bool,
         media: Option<&[u8]>,
+        raw: Option<&[u8]>,
         count_unread: bool,
     ) -> Result<bool> {
         let mut conn = self.lock();
@@ -290,8 +394,9 @@ impl Store {
         let inserted = tx.execute(
             "INSERT OR IGNORE INTO messages
                (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
-                mime,file_name,size,seconds,media)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                mime,file_name,size,seconds,media,raw,
+                quote_id,quote_sender,quote_text,quote_kind,forwarded)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
             params![
                 m.chat_jid,
                 m.id,
@@ -306,21 +411,43 @@ impl Store {
                 m.file_name,
                 m.size,
                 m.seconds,
-                media
+                media,
+                raw,
+                m.quote_id,
+                m.quote_sender,
+                m.quote_text,
+                m.quote_kind,
+                m.forwarded
             ],
         )? > 0;
         if inserted {
             let preview = preview_of(m);
             let unread_inc = i64::from(count_unread && !m.from_me);
             tx.execute(
-                "INSERT INTO chats (jid, is_group, last_ts, last_preview, unread)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
+                "INSERT INTO chats (jid, is_group, last_ts, last_preview, unread,
+                                    last_sender, last_sender_name, last_from_me)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(jid) DO UPDATE SET
                    last_preview = CASE WHEN excluded.last_ts >= chats.last_ts
                                        THEN excluded.last_preview ELSE chats.last_preview END,
+                   last_sender = CASE WHEN excluded.last_ts >= chats.last_ts
+                                      THEN excluded.last_sender ELSE chats.last_sender END,
+                   last_sender_name = CASE WHEN excluded.last_ts >= chats.last_ts
+                                      THEN excluded.last_sender_name ELSE chats.last_sender_name END,
+                   last_from_me = CASE WHEN excluded.last_ts >= chats.last_ts
+                                      THEN excluded.last_from_me ELSE chats.last_from_me END,
                    last_ts = MAX(chats.last_ts, excluded.last_ts),
                    unread = chats.unread + excluded.unread",
-                params![m.chat_jid, is_group, m.ts, preview, unread_inc],
+                params![
+                    m.chat_jid,
+                    is_group,
+                    m.ts,
+                    preview,
+                    unread_inc,
+                    m.sender_jid,
+                    m.sender_name,
+                    m.from_me
+                ],
             )?;
         }
         tx.commit()?;
@@ -341,16 +468,19 @@ impl Store {
     }
 
     pub fn get_message(&self, chat_jid: &str, id: &str) -> Result<Option<Message>> {
-        Ok(self
-            .lock()
+        let conn = self.lock();
+        let found = conn
             .query_row(
-                "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
-                        mime,file_name,size,seconds,media IS NOT NULL
-                 FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                &format!("SELECT {MSG_COLS} FROM messages WHERE chat_jid = ?1 AND id = ?2"),
                 params![chat_jid, id],
                 row_to_message,
             )
-            .optional()?)
+            .optional()?;
+        let Some(m) = found else { return Ok(None) };
+        let mut one = [m];
+        attach_reactions(&conn, chat_jid, &mut one)?;
+        let [m] = one;
+        Ok(Some(m))
     }
 
     /// Applies chat state imported from the phone's history.
@@ -433,6 +563,7 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [jid])?;
+        tx.execute("DELETE FROM reactions WHERE chat_jid = ?1", [jid])?;
         tx.execute(
             "UPDATE chats SET last_preview = '', unread = 0, marked_unread = 0 WHERE jid = ?1",
             [jid],
@@ -446,6 +577,7 @@ impl Store {
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [jid])?;
+        tx.execute("DELETE FROM reactions WHERE chat_jid = ?1", [jid])?;
         tx.execute("DELETE FROM list_members WHERE jid = ?1", [jid])?;
         tx.execute("DELETE FROM chats WHERE jid = ?1", [jid])?;
         tx.commit()?;
@@ -455,11 +587,9 @@ impl Store {
     /// Every message of a chat, oldest first, for exporting.
     pub fn all_messages(&self, chat_jid: &str) -> Result<Vec<Message>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
-                    mime,file_name,size,seconds,media IS NOT NULL
-             FROM messages WHERE chat_jid = ?1 ORDER BY ts, rowid",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE chat_jid = ?1 ORDER BY ts, rowid"
+        ))?;
         let rows = stmt.query_map([chat_jid], row_to_message)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
@@ -571,30 +701,28 @@ impl Store {
         limit: u32,
     ) -> Result<Vec<Message>> {
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
-                    mime,file_name,size,seconds,media IS NOT NULL
-             FROM messages WHERE chat_jid = ?1 AND ts < ?2
-             ORDER BY ts DESC, rowid DESC LIMIT ?3",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE chat_jid = ?1 AND ts < ?2
+                 ORDER BY ts DESC, rowid DESC LIMIT ?3"
+        ))?;
         let rows = stmt.query_map(
             params![chat_jid, before_ts.unwrap_or(i64::MAX), limit.min(500)],
             row_to_message,
         )?;
         let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         out.reverse();
+        drop(stmt);
+        attach_reactions(&conn, chat_jid, &mut out)?;
         Ok(out)
     }
 
     pub fn search_messages(&self, query: &str, limit: u32) -> Result<Vec<Message>> {
         let pattern = format!("%{}%", escape_like(query));
         let conn = self.lock();
-        let mut stmt = conn.prepare(
-            "SELECT id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
-                    mime,file_name,size,seconds,media IS NOT NULL
-             FROM messages WHERE text LIKE ?1 ESCAPE '\\'
-             ORDER BY ts DESC LIMIT ?2",
-        )?;
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE text LIKE ?1 ESCAPE '\\'
+                 ORDER BY ts DESC LIMIT ?2"
+        ))?;
         let rows = stmt.query_map(params![pattern, limit.min(200)], row_to_message)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
@@ -608,6 +736,247 @@ impl Store {
         )?;
         let rows = stmt.query_map([pattern], row_to_chat)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    // ---- message actions -------------------------------------------------
+
+    /// The full encoded message, kept so it can be quoted, forwarded or
+    /// resent (stickers).
+    pub fn get_raw(&self, chat_jid: &str, id: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT raw FROM messages WHERE chat_jid = ?1 AND id = ?2 AND raw IS NOT NULL",
+                params![chat_jid, id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Sets or (with an empty emoji) removes one sender's reaction.
+    pub fn set_reaction(
+        &self,
+        chat_jid: &str,
+        msg_id: &str,
+        sender_jid: &str,
+        from_me: bool,
+        emoji: &str,
+        ts: i64,
+    ) -> Result<()> {
+        let conn = self.lock();
+        // Our own reaction is keyed by a fixed sender so devices agree.
+        let sender = if from_me { "me" } else { sender_jid };
+        if emoji.is_empty() {
+            conn.execute(
+                "DELETE FROM reactions WHERE chat_jid = ?1 AND msg_id = ?2 AND sender_jid = ?3",
+                params![chat_jid, msg_id, sender],
+            )?;
+        } else {
+            conn.execute(
+                "INSERT INTO reactions (chat_jid, msg_id, sender_jid, from_me, emoji, ts)
+                 VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(chat_jid, msg_id, sender_jid) DO UPDATE SET
+                   emoji = excluded.emoji, ts = excluded.ts",
+                params![chat_jid, msg_id, sender, from_me, emoji, ts],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Replaces a message's text after an edit.
+    pub fn edit_message(&self, chat_jid: &str, id: &str, text: &str) -> Result<bool> {
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE messages SET text = ?3, edited = 1 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, text],
+        )?;
+        refresh_preview(&conn, chat_jid)?;
+        Ok(n > 0)
+    }
+
+    /// Marks a message deleted for everyone and drops its content.
+    pub fn mark_deleted(&self, chat_jid: &str, id: &str) -> Result<bool> {
+        let conn = self.lock();
+        let n = conn.execute(
+            "UPDATE messages SET deleted = 1, text = '', media = NULL, raw = NULL,
+                    quote_text = '', pinned = 0
+             WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id],
+        )?;
+        conn.execute(
+            "DELETE FROM reactions WHERE chat_jid = ?1 AND msg_id = ?2",
+            params![chat_jid, id],
+        )?;
+        refresh_preview(&conn, chat_jid)?;
+        Ok(n > 0)
+    }
+
+    /// Removes a message from this Mac only.
+    pub fn delete_message(&self, chat_jid: &str, id: &str) -> Result<()> {
+        let conn = self.lock();
+        conn.execute(
+            "DELETE FROM messages WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id],
+        )?;
+        conn.execute(
+            "DELETE FROM reactions WHERE chat_jid = ?1 AND msg_id = ?2",
+            params![chat_jid, id],
+        )?;
+        refresh_preview(&conn, chat_jid)?;
+        Ok(())
+    }
+
+    pub fn set_starred(&self, chat_jid: &str, id: &str, starred: bool) -> Result<()> {
+        self.lock().execute(
+            "UPDATE messages SET starred = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, starred],
+        )?;
+        Ok(())
+    }
+
+    /// Pins (timestamp) or unpins (0) a message.
+    pub fn set_message_pinned(&self, chat_jid: &str, id: &str, pinned: i64) -> Result<()> {
+        self.lock().execute(
+            "UPDATE messages SET pinned = ?3 WHERE chat_jid = ?1 AND id = ?2",
+            params![chat_jid, id, pinned],
+        )?;
+        Ok(())
+    }
+
+    /// Pinned messages of a chat, newest pin first.
+    pub fn pinned_messages(&self, chat_jid: &str) -> Result<Vec<Message>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE chat_jid = ?1 AND pinned > 0
+             ORDER BY pinned DESC LIMIT 3"
+        ))?;
+        let rows = stmt.query_map([chat_jid], row_to_message)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Starred messages across all chats, newest first.
+    pub fn starred_messages(&self, limit: u32) -> Result<Vec<Message>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages WHERE starred = 1 ORDER BY ts DESC LIMIT ?1"
+        ))?;
+        let rows = stmt.query_map([limit.min(500)], row_to_message)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    // ---- stickers --------------------------------------------------------
+
+    /// Remembers a sticker. `used` is when it was last sent or received.
+    pub fn add_sticker(&self, id: &str, media: &[u8], used: i64) -> Result<()> {
+        self.lock().execute(
+            "INSERT INTO stickers (id, media, last_used) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET last_used = MAX(stickers.last_used, excluded.last_used)",
+            params![id, media, used],
+        )?;
+        Ok(())
+    }
+
+    /// Favourites first, then the most recently used.
+    pub fn stickers(&self, limit: u32) -> Result<Vec<Sticker>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, favorite, last_used, media FROM stickers
+             ORDER BY favorite DESC, last_used DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit.min(500)], |r| {
+            Ok(Sticker {
+                id: r.get(0)?,
+                favorite: r.get(1)?,
+                last_used: r.get(2)?,
+                media: r.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn get_sticker(&self, id: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .lock()
+            .query_row("SELECT media FROM stickers WHERE id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .optional()?)
+    }
+
+    pub fn set_sticker_favorite(&self, id: &str, favorite: bool) -> Result<()> {
+        self.lock().execute(
+            "UPDATE stickers SET favorite = ?2 WHERE id = ?1",
+            params![id, favorite],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_sticker(&self, id: &str) -> Result<()> {
+        self.lock()
+            .execute("DELETE FROM stickers WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    // ---- notes -----------------------------------------------------------
+
+    pub fn list_notes(&self) -> Result<Vec<Note>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, text, color, pinned, done, ts, kind, mime, file_name, size
+             FROM notes ORDER BY ts, id",
+        )?;
+        let rows = stmt.query_map([], row_to_note)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    pub fn get_note(&self, id: i64) -> Result<Option<Note>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, text, color, pinned, done, ts, kind, mime, file_name, size
+                 FROM notes WHERE id = ?1",
+                [id],
+                row_to_note,
+            )
+            .optional()?)
+    }
+
+    /// Adds a note and returns it with its new id.
+    pub fn add_note(&self, note: &Note) -> Result<Note> {
+        let conn = self.lock();
+        conn.execute(
+            "INSERT INTO notes (text, color, pinned, done, ts, kind, mime, file_name, size)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                note.text,
+                note.color,
+                note.pinned,
+                note.done,
+                note.ts,
+                note.kind,
+                note.mime,
+                note.file_name,
+                note.size
+            ],
+        )?;
+        Ok(Note {
+            id: conn.last_insert_rowid(),
+            ..note.clone()
+        })
+    }
+
+    pub fn update_note(&self, note: &Note) -> Result<()> {
+        self.lock().execute(
+            "UPDATE notes SET text = ?2, color = ?3, pinned = ?4, done = ?5 WHERE id = ?1",
+            params![note.id, note.text, note.color, note.pinned, note.done],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_note(&self, id: i64) -> Result<()> {
+        self.lock()
+            .execute("DELETE FROM notes WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     // ---- assistant conversation -----------------------------------------
@@ -693,7 +1062,7 @@ impl Store {
     pub fn clear_whatsapp_data(&self) -> Result<()> {
         self.lock().execute_batch(
             "DELETE FROM messages; DELETE FROM chats; DELETE FROM list_members;
-             DELETE FROM contacts;",
+             DELETE FROM contacts; DELETE FROM reactions; DELETE FROM stickers;",
         )?;
         Ok(())
     }
@@ -732,6 +1101,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         ("messages", "size", "INTEGER NOT NULL DEFAULT 0"),
         ("messages", "seconds", "INTEGER NOT NULL DEFAULT 0"),
         ("messages", "media", "BLOB"),
+        ("messages", "raw", "BLOB"),
+        ("messages", "quote_id", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "quote_sender", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "quote_text", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "quote_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "forwarded", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "edited", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "deleted", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "starred", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "pinned", "INTEGER NOT NULL DEFAULT 0"),
+        ("chats", "last_sender", "TEXT NOT NULL DEFAULT ''"),
+        ("chats", "last_sender_name", "TEXT NOT NULL DEFAULT ''"),
+        ("chats", "last_from_me", "INTEGER NOT NULL DEFAULT 0"),
     ];
     for (table, column, decl) in columns {
         if !has(table, column)? {
@@ -755,6 +1137,8 @@ fn row_to_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
         pinned: r.get(9)?,
         muted_until: r.get(10)?,
         marked_unread: r.get(11)?,
+        last_sender: r.get(12)?,
+        last_from_me: r.get(13)?,
     })
 }
 
@@ -774,6 +1158,16 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         size: r.get(11)?,
         seconds: r.get(12)?,
         has_media: r.get(13)?,
+        quote_id: r.get(14)?,
+        quote_sender: r.get(15)?,
+        quote_text: r.get(16)?,
+        quote_kind: r.get(17)?,
+        forwarded: r.get(18)?,
+        edited: r.get(19)?,
+        deleted: r.get(20)?,
+        starred: r.get(21)?,
+        pinned: r.get(22)?,
+        reactions: Vec::new(),
     })
 }
 
@@ -787,8 +1181,77 @@ fn row_to_ai(r: &rusqlite::Row<'_>) -> rusqlite::Result<AiMessage> {
     })
 }
 
+fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
+    Ok(Note {
+        id: r.get(0)?,
+        text: r.get(1)?,
+        color: r.get(2)?,
+        pinned: r.get(3)?,
+        done: r.get(4)?,
+        ts: r.get(5)?,
+        kind: r.get(6)?,
+        mime: r.get(7)?,
+        file_name: r.get(8)?,
+        size: r.get(9)?,
+    })
+}
+
+/// Fills in the reactions of a page of messages from one chat.
+fn attach_reactions(conn: &Connection, chat_jid: &str, out: &mut [Message]) -> Result<()> {
+    if out.is_empty() {
+        return Ok(());
+    }
+    let first = out.iter().map(|m| m.ts).min().unwrap_or(0);
+    let mut stmt = conn.prepare(
+        "SELECT r.msg_id, r.emoji, r.sender_jid, r.from_me FROM reactions r
+         JOIN messages m ON m.chat_jid = r.chat_jid AND m.id = r.msg_id
+         WHERE r.chat_jid = ?1 AND m.ts >= ?2 ORDER BY r.ts",
+    )?;
+    let rows = stmt.query_map(params![chat_jid, first], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            Reaction {
+                emoji: r.get(1)?,
+                sender_jid: r.get(2)?,
+                from_me: r.get(3)?,
+            },
+        ))
+    })?;
+    for row in rows {
+        let (id, reaction) = row?;
+        if let Some(m) = out.iter_mut().find(|m| m.id == id) {
+            m.reactions.push(reaction);
+        }
+    }
+    Ok(())
+}
+
+/// Recomputes a chat's preview from its newest message (after edits and
+/// deletions).
+fn refresh_preview(conn: &Connection, chat_jid: &str) -> Result<()> {
+    let last = conn
+        .query_row(
+            &format!(
+                "SELECT {MSG_COLS} FROM messages WHERE chat_jid = ?1
+                 ORDER BY ts DESC, rowid DESC LIMIT 1"
+            ),
+            [chat_jid],
+            row_to_message,
+        )
+        .optional()?;
+    if let Some(m) = last {
+        conn.execute(
+            "UPDATE chats SET last_preview = ?2 WHERE jid = ?1",
+            params![chat_jid, preview_of(&m)],
+        )?;
+    }
+    Ok(())
+}
+
 fn preview_of(m: &Message) -> String {
-    let base = if m.text.is_empty() {
+    let base = if m.deleted {
+        "[deleted]".to_string()
+    } else if m.text.is_empty() {
         format!("[{}]", m.kind)
     } else {
         m.text.clone()
@@ -930,7 +1393,7 @@ mod tests {
         let mut m = msg("b", "img", 40, "", false);
         m.kind = "image".into();
         m.size = 1234;
-        s.insert_message_full(&m, false, Some(b"keys"), true)
+        s.insert_message_full(&m, false, Some(b"keys"), None, true)
             .unwrap();
         assert!(s.get_message("b", "img").unwrap().unwrap().has_media);
         assert_eq!(s.get_media("b", "img").unwrap().unwrap().1, b"keys");
@@ -988,5 +1451,92 @@ mod tests {
         s.set_json("list", &vec!["a".to_string()]).unwrap();
         let v: Vec<String> = s.get_json("list");
         assert_eq!(v, ["a"]);
+    }
+
+    #[test]
+    fn message_actions() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        let mut reply = msg("g@g.us", "2", 20, "sí", false);
+        reply.quote_id = "1".into();
+        reply.quote_text = "¿vamos?".into();
+        s.insert_message(&msg("g@g.us", "1", 10, "¿vamos?", true), true)
+            .unwrap();
+        s.insert_message_full(&reply, true, None, Some(b"raw"), true)
+            .unwrap();
+        // Group preview names the last sender; contacts win over push names.
+        s.upsert_contact("s@s.whatsapp.net", "Ana María", false)
+            .unwrap();
+        let chat = s.get_chat("g@g.us").unwrap().unwrap();
+        assert_eq!(chat.last_sender, "Ana María");
+        assert!(!chat.last_from_me);
+        assert_eq!(s.get_raw("g@g.us", "2").unwrap().unwrap(), b"raw");
+
+        s.set_reaction("g@g.us", "1", "x@s.whatsapp.net", false, "👍", 30)
+            .unwrap();
+        s.set_reaction("g@g.us", "1", "", true, "❤️", 31).unwrap();
+        s.set_reaction("g@g.us", "1", "", true, "😂", 32).unwrap();
+        let page = s.list_messages("g@g.us", None, 10).unwrap();
+        assert_eq!(page[0].reactions.len(), 2);
+        assert_eq!(page[1].quote_text, "¿vamos?");
+        s.set_reaction("g@g.us", "1", "x@s.whatsapp.net", false, "", 33)
+            .unwrap();
+        assert_eq!(
+            s.get_message("g@g.us", "1")
+                .unwrap()
+                .unwrap()
+                .reactions
+                .len(),
+            1
+        );
+
+        assert!(s.edit_message("g@g.us", "2", "no").unwrap());
+        let edited = s.get_message("g@g.us", "2").unwrap().unwrap();
+        assert!(edited.edited);
+        assert_eq!(s.get_chat("g@g.us").unwrap().unwrap().last_preview, "no");
+
+        s.set_starred("g@g.us", "1", true).unwrap();
+        s.set_message_pinned("g@g.us", "1", 99).unwrap();
+        assert_eq!(s.starred_messages(10).unwrap().len(), 1);
+        assert_eq!(s.pinned_messages("g@g.us").unwrap()[0].id, "1");
+
+        assert!(s.mark_deleted("g@g.us", "2").unwrap());
+        let gone = s.get_message("g@g.us", "2").unwrap().unwrap();
+        assert!(gone.deleted && gone.text.is_empty());
+        assert!(s.get_raw("g@g.us", "2").unwrap().is_none());
+        s.delete_message("g@g.us", "1").unwrap();
+        assert!(s.get_message("g@g.us", "1").unwrap().is_none());
+    }
+
+    #[test]
+    fn stickers_and_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        s.add_sticker("aa", b"one", 10).unwrap();
+        s.add_sticker("bb", b"two", 20).unwrap();
+        s.add_sticker("aa", b"one", 5).unwrap();
+        assert_eq!(s.stickers(10).unwrap()[0].id, "bb");
+        s.set_sticker_favorite("aa", true).unwrap();
+        assert_eq!(s.stickers(10).unwrap()[0].id, "aa");
+        assert_eq!(s.get_sticker("bb").unwrap().unwrap(), b"two");
+        s.remove_sticker("bb").unwrap();
+        assert_eq!(s.stickers(10).unwrap().len(), 1);
+
+        let mut note = s
+            .add_note(&Note {
+                text: "comprar pan".into(),
+                ts: 1,
+                kind: "text".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        note.done = true;
+        note.color = "yellow".into();
+        s.update_note(&note).unwrap();
+        let notes = s.list_notes().unwrap();
+        assert!(notes[0].done);
+        assert_eq!(notes[0].color, "yellow");
+        s.delete_note(note.id).unwrap();
+        assert!(s.list_notes().unwrap().is_empty());
     }
 }
