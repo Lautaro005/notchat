@@ -8,6 +8,7 @@ import {
   type ChatList,
   type Message,
   type Note,
+  type Person,
   type Release,
   type SendKind,
   type Status,
@@ -119,6 +120,10 @@ export const app = $state({
   },
   /** Message shown in the info dialog. */
   info: null as Message | null,
+  /** Bumped when the saved stickers change, so the picker reloads them. */
+  stickersVersion: 0,
+  /** A mentioned person's card: name, phone, actions. */
+  person: null as null | { p: Person; x: number; y: number },
   notes: [] as Note[],
   notesView: stored<NotesView>("notesView", "chat"),
   ai: {

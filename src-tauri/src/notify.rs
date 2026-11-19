@@ -75,7 +75,7 @@ pub fn deliver(
         let body = if message.text.is_empty() {
             format!("[{}]", message.kind)
         } else {
-            message.text.chars().take(240).collect()
+            message.text_with_names().chars().take(240).collect()
         };
         sysnotify::post(&message.id, &message.chat_jid, &title, &body);
     } else {

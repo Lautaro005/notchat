@@ -10,7 +10,11 @@
     y,
     onclose,
     sub = false,
-  }: { items: MenuItem[]; x: number; y: number; onclose: () => void; sub?: boolean } = $props();
+    ondone,
+  }: { items: MenuItem[]; x: number; y: number; onclose: () => void; sub?: boolean; ondone?: () => void } = $props();
+
+  // Choosing an item closes the whole menu, submenus included.
+  const done = () => (ondone ?? onclose)();
 
   let el: HTMLElement | undefined = $state();
   let left = $state(0);
@@ -48,7 +52,7 @@
       openSub(i, target);
       return;
     }
-    onclose();
+    done();
     item.action?.();
   }
 
@@ -110,7 +114,7 @@
 </div>
 
 {#if openIndex !== null && items[openIndex]?.children}
-  <Self items={items[openIndex].children ?? []} x={subPos.x} y={subPos.y} sub onclose={() => (sub ? onclose() : (openIndex = null))} />
+  <Self items={items[openIndex].children ?? []} x={subPos.x} y={subPos.y} sub onclose={() => (openIndex = null)} ondone={done} />
 {/if}
 
 <style>

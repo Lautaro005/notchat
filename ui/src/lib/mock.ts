@@ -16,7 +16,7 @@ const chats: Chat[] = [
   { ...base, jid: "5491155550005@s.whatsapp.net", name: "Viejo chat", is_group: false, last_ts: now - 9000000, last_preview: "Gracias!", unread: 1, archived: true },
 ];
 
-const lists = [{ id: 1, name: "Familia", jids: [chats[3].jid] }, { id: 2, name: "Trabajo", jids: [chats[5].jid, chats[4].jid] }];
+const lists = [{ id: 1, name: "Familia", jids: [chats[3].jid] }, { id: 2, name: "Trabajo", jids: [chats[5].jid, chats[4].jid] }, { id: 3, name: "Fútbol", jids: [chats[1].jid] }];
 
 const photo = (h: number) =>
   `data:image/svg+xml;utf8,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h} 45% 62%)"/><stop offset="1" stop-color="hsl(${h + 40} 40% 38%)"/></linearGradient></defs><rect width="120" height="120" fill="url(#g)"/><circle cx="60" cy="48" r="22" fill="rgba(255,255,255,.75)"/><ellipse cx="60" cy="112" rx="40" ry="30" fill="rgba(255,255,255,.75)"/></svg>`)}`;
@@ -72,6 +72,15 @@ const messages: Record<string, Message[]> = {
     m("2b", chats[1].jid, 2600, "", false, { kind: "sticker", has_media: true, sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
     m("3", chats[1].jid, 2400, "Falta uno para completar", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R.", forwarded: true }),
     m("3b", chats[1].jid, 2390, "Alguien que traiga pelota", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
+    m("3c", chats[1].jid, 2300, "@5491155550009 vos tenías una, ¿no? Si no @48291 la trae", false, {
+      sender_jid: "77120@lid",
+      sender_name: "~Nacho",
+      sender_phone: "+5491155550010",
+      mentions: [
+        { jid: "5491155550009@s.whatsapp.net", user: "5491155550009", name: "Tomás", phone: "+5491155550009", saved: true },
+        { jid: "48291@lid", user: "48291", name: "~Fede", phone: "", saved: false },
+      ],
+    }),
   ],
 };
 

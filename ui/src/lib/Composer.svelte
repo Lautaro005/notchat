@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onDestroy, tick } from "svelte";
+  import { untrack, onDestroy, tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { api } from "./api";
   import { app, appendSent, chatTitle, kindOf, MAX_FILE, openMenu, send, sendFile } from "./app.svelte";
@@ -69,6 +69,15 @@
     app.reply = null;
     app.editing = null;
   }
+
+  // A sticker saved from a message shows up next time the picker opens.
+  $effect(() => {
+    void app.stickersVersion;
+    untrack(() => {
+      stickers = null;
+      if (panelTab === "stickers") void openStickers();
+    });
+  });
 
   async function openStickers() {
     panelTab = "stickers";

@@ -100,6 +100,45 @@ pub struct Message {
     pub pinned: i64,
     #[serde(default)]
     pub reactions: Vec<Reaction>,
+    /// JIDs mentioned in the text (`@<number>`), as received.
+    #[serde(default, skip_serializing)]
+    pub mention_jids: Vec<String>,
+    /// Who each `@<number>` in the text is, resolved when read.
+    #[serde(default)]
+    pub mentions: Vec<Person>,
+    /// The sender's phone number (`+…`), when known.
+    #[serde(default)]
+    pub sender_phone: String,
+    /// Display name of whoever wrote the quoted message.
+    #[serde(default)]
+    pub quote_name: String,
+}
+
+impl Message {
+    /// The text with `@<number>` mentions replaced by names.
+    pub fn text_with_names(&self) -> String {
+        let mut text = self.text.clone();
+        for p in &self.mentions {
+            if !p.user.is_empty() && !p.name.is_empty() {
+                text = text.replace(&format!("@{}", p.user), &format!("@{}", p.name));
+            }
+        }
+        text
+    }
+}
+
+/// How a WhatsApp user is shown: their contact-book name, or `~` plus the
+/// name they gave themselves, or their phone number.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Person {
+    pub jid: String,
+    /// The user part of the JID, as written after `@` in mentions.
+    pub user: String,
+    pub name: String,
+    /// `+` and digits; empty when only a LID is known.
+    pub phone: String,
+    /// True when the name comes from the contact book.
+    pub saved: bool,
 }
 
 /// One person's reaction to a message.
@@ -156,7 +195,7 @@ pub struct Store {
 /// Columns read by [`row_to_message`], in order.
 const MSG_COLS: &str = "id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
     mime,file_name,size,seconds,media IS NOT NULL,quote_id,quote_sender,quote_text,
-    quote_kind,forwarded,edited,deleted,starred,pinned";
+    quote_kind,forwarded,edited,deleted,starred,pinned,mentions";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS chats (
@@ -194,6 +233,11 @@ CREATE TABLE IF NOT EXISTS contacts (
   name TEXT NOT NULL DEFAULT '',
   push_name TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS lid_map (
+  lid TEXT PRIMARY KEY,
+  pn TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lid_map_pn ON lid_map(pn);
 CREATE TABLE IF NOT EXISTS lists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL
@@ -255,23 +299,40 @@ impl Store {
         migrate(&conn)?;
         // Chats named after the contact book (or push name) when WhatsApp
         // did not give the chat a name of its own.
+        // `people` finds a contact by either of its addresses (phone or LID).
+        // People without a contact-book entry show as `~` + their own name.
         conn.execute_batch(
-            "DROP VIEW IF EXISTS chat_view;
+            "DROP VIEW IF EXISTS people;
+             CREATE TEMP VIEW people AS
+             SELECT jid, name, push_name FROM contacts
+             UNION ALL
+             SELECT m.lid, ct.name, ct.push_name FROM lid_map m JOIN contacts ct ON ct.jid = m.pn
+             UNION ALL
+             SELECT m.pn, ct.name, ct.push_name FROM lid_map m JOIN contacts ct ON ct.jid = m.lid;
+             DROP VIEW IF EXISTS chat_view;
              CREATE TEMP VIEW chat_view AS
              SELECT c.jid,
-                    CASE WHEN c.name != '' THEN c.name
-                         ELSE COALESCE(NULLIF(ct.name, ''), NULLIF(ct.push_name, ''), '') END
+                    CASE WHEN c.is_group THEN c.name
+                         ELSE COALESCE(
+                           (SELECT name FROM people WHERE jid = c.jid AND name != '' LIMIT 1),
+                           NULLIF(NULLIF(c.name, ''),
+                             (SELECT push_name FROM people WHERE jid = c.jid AND push_name != '' LIMIT 1)),
+                           '~' || (SELECT push_name FROM people
+                                   WHERE jid = c.jid AND push_name != '' LIMIT 1),
+                           c.name) END
                       AS name,
                     c.is_group, c.last_ts, c.last_preview, c.unread, c.auto_reply,
                     c.instructions, c.archived, c.pinned, c.muted_until, c.marked_unread,
                     CASE WHEN c.last_from_me THEN ''
-                         ELSE COALESCE(NULLIF(sc.name, ''), NULLIF(sc.push_name, ''),
-                                       NULLIF(c.last_sender_name, ''), c.last_sender) END
+                         ELSE COALESCE(
+                           (SELECT name FROM people WHERE jid = c.last_sender AND name != '' LIMIT 1),
+                           '~' || (SELECT push_name FROM people
+                                   WHERE jid = c.last_sender AND push_name != '' LIMIT 1),
+                           '~' || NULLIF(c.last_sender_name, ''),
+                           c.last_sender) END
                       AS last_sender,
                     c.last_from_me
-             FROM chats c
-             LEFT JOIN contacts ct ON ct.jid = c.jid
-             LEFT JOIN contacts sc ON sc.jid = c.last_sender;",
+             FROM chats c;",
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -292,6 +353,14 @@ impl Store {
             "SELECT * FROM chat_view WHERE last_ts > 0 OR pinned > 0
              ORDER BY pinned DESC, last_ts DESC",
         )?;
+        let rows = stmt.query_map([], row_to_chat)?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Every known chat, including ones without messages yet (for name lookups).
+    pub fn all_chats(&self) -> Result<Vec<Chat>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT * FROM chat_view ORDER BY last_ts DESC")?;
         let rows = stmt.query_map([], row_to_chat)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
@@ -333,6 +402,39 @@ impl Store {
         Ok(())
     }
 
+    /// Remembers that a LID and a phone-number JID are the same person.
+    pub fn map_lid(&self, lid: &str, pn: &str) -> Result<()> {
+        let (lid, pn) = (bare_jid(lid), bare_jid(pn));
+        if !lid.ends_with("@lid") || !pn.ends_with("@s.whatsapp.net") {
+            return Ok(());
+        }
+        self.lock().execute(
+            "INSERT INTO lid_map (lid, pn) VALUES (?1, ?2)
+             ON CONFLICT(lid) DO UPDATE SET pn = ?2",
+            params![lid, pn],
+        )?;
+        Ok(())
+    }
+
+    /// The phone-number JID for a LID, when known; other JIDs unchanged.
+    pub fn canonical_jid(&self, jid: &str) -> String {
+        if !jid.ends_with("@lid") {
+            return jid.to_string();
+        }
+        self.lock()
+            .query_row(
+                "SELECT pn FROM lid_map WHERE lid = ?1",
+                [bare_jid(jid)],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| jid.to_string())
+    }
+
+    /// How a user is shown: contact name, `~` + own name, or phone number.
+    pub fn person(&self, jid: &str, push: &str) -> Person {
+        person(&self.lock(), jid, push)
+    }
+
     /// Makes sure a group shows in the list, dated at least `ts`.
     pub fn upsert_group(&self, jid: &str, subject: &str, ts: i64) -> Result<()> {
         self.lock().execute(
@@ -344,6 +446,38 @@ impl Store {
             params![jid, subject, ts],
         )?;
         Ok(())
+    }
+
+    /// Marks a chat read up to the newest of `ids` (read on another device):
+    /// messages that arrived after it stay unread. When none of them is
+    /// stored, the whole chat counts as read.
+    pub fn mark_read_up_to(&self, jid: &str, ids: &[String]) -> Result<bool> {
+        let conn = self.lock();
+        let mut newest: Option<i64> = None;
+        for id in ids {
+            let ts: Option<i64> = conn
+                .query_row(
+                    "SELECT ts FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                    params![jid, id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            newest = newest.max(ts);
+        }
+        let left: i64 = match newest {
+            Some(ts) => conn.query_row(
+                "SELECT count(*) FROM messages WHERE chat_jid = ?1 AND from_me = 0 AND ts > ?2",
+                params![jid, ts],
+                |r| r.get(0),
+            )?,
+            None => 0,
+        };
+        let changed = conn.execute(
+            "UPDATE chats SET unread = MIN(unread, ?2), marked_unread = 0
+             WHERE jid = ?1 AND (unread > ?2 OR marked_unread = 1)",
+            params![jid, left],
+        )?;
+        Ok(changed > 0)
     }
 
     pub fn mark_read(&self, jid: &str) -> Result<()> {
@@ -395,8 +529,8 @@ impl Store {
             "INSERT OR IGNORE INTO messages
                (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
                 mime,file_name,size,seconds,media,raw,
-                quote_id,quote_sender,quote_text,quote_kind,forwarded)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)",
+                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             params![
                 m.chat_jid,
                 m.id,
@@ -417,11 +551,12 @@ impl Store {
                 m.quote_sender,
                 m.quote_text,
                 m.quote_kind,
-                m.forwarded
+                m.forwarded,
+                m.mention_jids.join(",")
             ],
         )? > 0;
         if inserted {
-            let preview = preview_of(m);
+            let preview = named_mentions(&tx, &preview_of(m), &m.mention_jids);
             let unread_inc = i64::from(count_unread && !m.from_me);
             tx.execute(
                 "INSERT INTO chats (jid, is_group, last_ts, last_preview, unread,
@@ -479,6 +614,7 @@ impl Store {
         let Some(m) = found else { return Ok(None) };
         let mut one = [m];
         attach_reactions(&conn, chat_jid, &mut one)?;
+        resolve_people(&conn, &mut one);
         let [m] = one;
         Ok(Some(m))
     }
@@ -713,6 +849,7 @@ impl Store {
         out.reverse();
         drop(stmt);
         attach_reactions(&conn, chat_jid, &mut out)?;
+        resolve_people(&conn, &mut out);
         Ok(out)
     }
 
@@ -724,7 +861,10 @@ impl Store {
                  ORDER BY ts DESC LIMIT ?2"
         ))?;
         let rows = stmt.query_map(params![pattern, limit.min(200)], row_to_message)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        resolve_people(&conn, &mut out);
+        Ok(out)
     }
 
     /// Finds chats whose name contains `query` (case-insensitive).
@@ -851,7 +991,10 @@ impl Store {
              ORDER BY pinned DESC LIMIT 3"
         ))?;
         let rows = stmt.query_map([chat_jid], row_to_message)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        resolve_people(&conn, &mut out);
+        Ok(out)
     }
 
     /// Starred messages across all chats, newest first.
@@ -861,7 +1004,10 @@ impl Store {
             "SELECT {MSG_COLS} FROM messages WHERE starred = 1 ORDER BY ts DESC LIMIT ?1"
         ))?;
         let rows = stmt.query_map([limit.min(500)], row_to_message)?;
-        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+        let mut out = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(stmt);
+        resolve_people(&conn, &mut out);
+        Ok(out)
     }
 
     // ---- stickers --------------------------------------------------------
@@ -1062,7 +1208,7 @@ impl Store {
     pub fn clear_whatsapp_data(&self) -> Result<()> {
         self.lock().execute_batch(
             "DELETE FROM messages; DELETE FROM chats; DELETE FROM list_members;
-             DELETE FROM contacts; DELETE FROM reactions; DELETE FROM stickers;",
+             DELETE FROM contacts; DELETE FROM lid_map; DELETE FROM reactions; DELETE FROM stickers;",
         )?;
         Ok(())
     }
@@ -1114,6 +1260,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         ("chats", "last_sender", "TEXT NOT NULL DEFAULT ''"),
         ("chats", "last_sender_name", "TEXT NOT NULL DEFAULT ''"),
         ("chats", "last_from_me", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "mentions", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (table, column, decl) in columns {
         if !has(table, column)? {
@@ -1168,6 +1315,13 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
         starred: r.get(21)?,
         pinned: r.get(22)?,
         reactions: Vec::new(),
+        mention_jids: r
+            .get::<_, String>(23)?
+            .split(',')
+            .filter(|j| !j.is_empty())
+            .map(str::to_string)
+            .collect(),
+        ..Default::default()
     })
 }
 
@@ -1197,6 +1351,95 @@ fn row_to_note(r: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
 }
 
 /// Fills in the reactions of a page of messages from one chat.
+/// Strips the device part: `123:4@s.whatsapp.net` → `123@s.whatsapp.net`.
+pub fn bare_jid(jid: &str) -> String {
+    match jid.split_once('@') {
+        Some((user, server)) => {
+            let user = user.split(':').next().unwrap_or(user);
+            format!("{user}@{server}")
+        }
+        None => jid.to_string(),
+    }
+}
+
+fn person(conn: &Connection, jid: &str, push: &str) -> Person {
+    let jid = bare_jid(jid);
+    let user = jid.split('@').next().unwrap_or_default().to_string();
+    let lookup = |sql: &str, key: &str| -> Option<String> {
+        conn.query_row(sql, [key], |r| r.get::<_, String>(0))
+            .optional()
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty())
+    };
+    let pn = if jid.ends_with("@s.whatsapp.net") {
+        Some(jid.clone())
+    } else if jid.ends_with("@lid") {
+        lookup("SELECT pn FROM lid_map WHERE lid = ?1", &jid)
+    } else {
+        None
+    };
+    let phone = pn
+        .map(|p| format!("+{}", p.split('@').next().unwrap_or_default()))
+        .unwrap_or_default();
+    let saved = lookup(
+        "SELECT name FROM people WHERE jid = ?1 AND name != '' LIMIT 1",
+        &jid,
+    );
+    let own = lookup(
+        "SELECT push_name FROM people WHERE jid = ?1 AND push_name != '' LIMIT 1",
+        &jid,
+    )
+    .or_else(|| Some(push.to_string()).filter(|p| !p.is_empty()));
+    let name = match (&saved, own) {
+        (Some(n), _) => n.clone(),
+        (None, Some(p)) => format!("~{p}"),
+        (None, None) => phone.clone(),
+    };
+    Person {
+        jid,
+        user,
+        name,
+        phone,
+        saved: saved.is_some(),
+    }
+}
+
+/// Replaces `@<number>` in a preview with the mentioned person's name.
+fn named_mentions(conn: &Connection, text: &str, jids: &[String]) -> String {
+    let mut out = text.to_string();
+    for jid in jids {
+        let p = person(conn, jid, "");
+        if !p.user.is_empty() && !p.name.is_empty() {
+            let shown = p.name.trim_start_matches('~');
+            out = out.replace(&format!("@{}", p.user), &format!("@{shown}"));
+        }
+    }
+    out
+}
+
+/// Fills in display names: senders, quoted authors and mentions.
+fn resolve_people(conn: &Connection, out: &mut [Message]) {
+    let mut cache: std::collections::HashMap<String, Person> = std::collections::HashMap::new();
+    let mut get = |jid: &str, push: &str| -> Person {
+        cache
+            .entry(bare_jid(jid))
+            .or_insert_with(|| person(conn, jid, push))
+            .clone()
+    };
+    for m in out.iter_mut() {
+        if !m.from_me && !m.sender_jid.is_empty() {
+            let p = get(&m.sender_jid, &m.sender_name);
+            m.sender_name = p.name;
+            m.sender_phone = p.phone;
+        }
+        if !m.quote_sender.is_empty() && m.quote_sender != "me" {
+            m.quote_name = get(&m.quote_sender, "").name;
+        }
+        m.mentions = m.mention_jids.iter().map(|j| get(j, "")).collect();
+    }
+}
+
 fn attach_reactions(conn: &Connection, chat_jid: &str, out: &mut [Message]) -> Result<()> {
     if out.is_empty() {
         return Ok(());
@@ -1416,6 +1659,69 @@ mod tests {
         let chats = s.list_chats().unwrap();
         assert_eq!(chats[0].name, "Asado");
         assert!(chats[0].is_group);
+    }
+
+    #[test]
+    fn names_follow_contacts_then_tilde_push_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        let ana = "5491100000001@s.whatsapp.net";
+        let beto = "5491100000002@s.whatsapp.net";
+        let beto_lid = "99001:3@lid";
+        // Saved contact: the address-book name, even if a push name exists.
+        s.upsert_contact(ana, "Ana Gómez", false).unwrap();
+        s.upsert_contact(ana, "Anita", true).unwrap();
+        s.insert_message(&msg(ana, "1", 5, "hi", false), false)
+            .unwrap();
+        assert_eq!(s.get_chat(ana).unwrap().unwrap().name, "Ana Gómez");
+        // Not saved: their own name with ~.
+        s.upsert_contact(beto, "Beto", true).unwrap();
+        s.insert_message(&msg(beto, "2", 6, "hey", false), false)
+            .unwrap();
+        assert_eq!(s.get_chat(beto).unwrap().unwrap().name, "~Beto");
+
+        // A group message from Beto's LID, mentioning Ana's LID.
+        s.map_lid(beto_lid, beto).unwrap();
+        s.map_lid("77001@lid", ana).unwrap();
+        let mut m = msg("g@g.us", "3", 7, "@77001 venís?", false);
+        m.sender_jid = "99001@lid".into();
+        m.sender_name = "Beto push".into();
+        m.mention_jids = vec!["77001@lid".into()];
+        s.insert_message(&m, true).unwrap();
+        let got = s.get_message("g@g.us", "3").unwrap().unwrap();
+        assert_eq!(got.sender_name, "~Beto");
+        assert_eq!(got.sender_phone, "+5491100000002");
+        assert_eq!(got.mentions.len(), 1);
+        assert_eq!(got.mentions[0].user, "77001");
+        assert_eq!(got.mentions[0].name, "Ana Gómez");
+        assert!(got.mentions[0].saved);
+        assert_eq!(got.text_with_names(), "@Ana Gómez venís?");
+        let group = s.get_chat("g@g.us").unwrap().unwrap();
+        assert_eq!(group.last_sender, "~Beto");
+        assert_eq!(group.last_preview, "@Ana Gómez venís?");
+        assert_eq!(s.canonical_jid("99001@lid"), beto);
+        // Unknown LID without a name: nothing to show but the id itself.
+        assert_eq!(s.person("123@lid", "").name, "");
+        assert_eq!(s.person("123@lid", "Zoe").name, "~Zoe");
+    }
+
+    #[test]
+    fn read_on_phone_clears_unread_up_to_that_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        for (id, ts) in [("1", 10), ("2", 20), ("3", 30)] {
+            s.insert_message(&msg("a", id, ts, "x", false), false)
+                .unwrap();
+        }
+        assert_eq!(s.get_chat("a").unwrap().unwrap().unread, 3);
+        assert!(s.mark_read_up_to("a", &["2".into()]).unwrap());
+        assert_eq!(s.get_chat("a").unwrap().unwrap().unread, 1);
+        assert!(
+            !s.mark_read_up_to("a", &["1".into()]).unwrap(),
+            "never raises"
+        );
+        assert!(s.mark_read_up_to("a", &["unknown".into()]).unwrap());
+        assert_eq!(s.get_chat("a").unwrap().unwrap().unread, 0);
     }
 
     #[test]

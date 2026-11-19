@@ -20,7 +20,8 @@ System font (`-apple-system`); `ui-rounded` for big titles, empty states and sti
 
 ## Shape and space
 
-- Bubbles: 18px corners; inside a run of messages from one sender the joined corners drop to 6px, and the run's last bubble keeps a 6px tail corner. Runs sit 3px apart, separate runs 14px.
+- Bubbles: 18px corners; the first bubble of a run from one sender has a 6px tail corner at the top (left for others, right for me). Every message sits 12px from the next, whether or not the sender changes.
+- Mentions and group sender names are buttons in the accent colour (underlined in your own bubbles); they open a small person card. A chat's lists show as soft accent chips in its header.
 - Conversation, assistant and notes are floating cards (16px radius) on the window background.
 - 4px spacing grid. Chat rows 68px. Sidebar resizable 260–520px.
 - Depth is rare: one soft offset shadow for floating things (menus, dialogs, cards). No colored side stripes.

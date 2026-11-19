@@ -234,6 +234,13 @@ pub fn sticker_favorite(state: St<'_>, id: String, favorite: bool) -> Result<()>
     state.store.set_sticker_favorite(&id, favorite)
 }
 
+/// Saves the sticker of a message to the favourites, ready to send later.
+#[tauri::command]
+pub fn sticker_save(state: St<'_>, jid: String, id: String) -> Result<String> {
+    check(&jid, &id)?;
+    notchat_core::wa::save_sticker_from_message(&state.store, &jid, &id)
+}
+
 #[tauri::command]
 pub fn sticker_remove(state: St<'_>, id: String) -> Result<()> {
     check_sticker(&id)?;

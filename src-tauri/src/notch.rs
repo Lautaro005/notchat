@@ -185,7 +185,7 @@ pub fn notify(app: &AppHandle, state: &Arc<AppState>, message: &Message, is_grou
         } else {
             String::new()
         },
-        text: message.text.chars().take(240).collect(),
+        text: message.text_with_names().chars().take(240).collect(),
         kind: message.kind.clone(),
         is_group,
         notch_height: 0.0,

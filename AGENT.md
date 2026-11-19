@@ -108,6 +108,9 @@ npm --prefix ui run check
 - Acciones de mensaje (responder, reaccionar, editar, borrar, destacar, fijar, reenviar): `WaClient` en `wa.rs`; el mensaje completo se guarda codificado en `messages.raw` para poder citarlo o reenviarlo sin volver a subir el archivo. Reacciones en la tabla `reactions` (la propia con remitente `me`).
 - Stickers: tabla `stickers` (id = SHA-256 del archivo); se llena con `recentStickers` del historial y con cada sticker enviado o recibido. Los Lottie se ignoran.
 - Notas: tabla `notes`; sus archivos van a `notes/` (aparte de `media/`, así «Liberar espacio» nunca los borra).
+- Nombres: la vista temporal `people` busca un contacto por número o por LID (tabla `lid_map`, que se llena con `sender_alt`/`recipient_alt`, el historial, los contactos y los participantes de grupos). Orden: nombre de la agenda → `~` + nombre de WhatsApp → `+número`. Se resuelven al leer (`resolve_people` en `store.rs`), nunca se guardan ya resueltos.
+- Menciones: `messages.mentions` guarda los JID mencionados; al leer se devuelven como `Person` para que la UI muestre `@Nombre`.
+- Leídos en el teléfono: los recibos `read-self` bajan el contador con `Store::mark_read_up_to`.
 - Puertos de los proveedores locales: ajuste `ai_ports` (`ProviderPorts`), siempre en 127.0.0.1 y ≥ 1024.
 - Vista previa del notch en el navegador: `http://127.0.0.1:1420/?view=notch#notch`.
 - Actualizaciones: `crates/core/src/update.rs` (verifica `SHA256SUMS` del release) y `src-tauri/src/updater.rs` (reemplaza el `.app` al salir).

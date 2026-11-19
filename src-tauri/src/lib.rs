@@ -186,6 +186,7 @@ pub fn run() {
             messages::sticker_image,
             messages::sticker_send,
             messages::sticker_favorite,
+            messages::sticker_save,
             messages::sticker_remove,
             messages::notes_list,
             messages::note_add,

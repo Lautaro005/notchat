@@ -152,6 +152,8 @@ struct Described {
     quote_text: String,
     quote_kind: String,
     forwarded: bool,
+    /// JIDs mentioned with `@` in the text.
+    mentions: Vec<String>,
 }
 
 impl Described {
@@ -169,6 +171,7 @@ impl Described {
         m.quote_text = self.quote_text;
         m.quote_kind = self.quote_kind;
         m.forwarded = self.forwarded;
+        m.mention_jids = self.mentions;
         self.keys
     }
 }
@@ -209,6 +212,7 @@ fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
 fn with_context(mut d: Described, base: &wa::Message) -> Described {
     if let Some(ctx) = context_of(base) {
         d.forwarded = ctx.is_forwarded == Some(true);
+        d.mentions = ctx.mentioned_jid.clone();
         if let (Some(id), Some(quoted)) = (&ctx.stanza_id, ctx.quoted_message.as_option()) {
             let q = describe_body(quoted);
             d.quote_id = id.clone();
@@ -1062,7 +1066,30 @@ async fn handle_event(
             }
             let _ = tx.send(WaEvent::ChatsChanged);
         }
+        Event::Receipt(receipt)
+            if receipt.r#type == whatsapp_rust::wacore::types::presence::ReceiptType::ReadSelf =>
+        {
+            // Read on the phone (or another linked device).
+            let chat = store.canonical_jid(&receipt.source.chat.to_string());
+            let ids: Vec<String> = receipt
+                .message_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if let Ok(true) = store.mark_read_up_to(&chat, &ids) {
+                let _ = tx.send(WaEvent::ChatUpdated { jid: chat });
+            }
+        }
         Event::ContactUpdate(update) => {
+            for (lid, pn) in [
+                (update.action.lid_jid.clone(), update.action.pn_jid.clone()),
+                (update.action.lid_jid.clone(), Some(update.jid.to_string())),
+                (Some(update.jid.to_string()), update.action.pn_jid.clone()),
+            ] {
+                if let (Some(lid), Some(pn)) = (lid, pn) {
+                    let _ = store.map_lid(&lid, &pn);
+                }
+            }
             let name = update
                 .action
                 .full_name
@@ -1158,6 +1185,7 @@ async fn handle_event(
         }
         Event::GroupUpdate(update) => {
             if let Ok(meta) = client.groups().get_metadata(&update.group_jid).await {
+                learn_participants(&meta.participants, store);
                 let _ = store.upsert_group(&update.group_jid.to_string(), &meta.subject, 0);
                 changed(&update.group_jid);
             }
@@ -1172,6 +1200,7 @@ async fn sync_groups(client: &Arc<Client>, store: &Arc<Store>, tx: &UnboundedSen
     match client.groups().get_participating().await {
         Ok(groups) => {
             for (jid, meta) in &groups {
+                learn_participants(&meta.participants, store);
                 let ts = meta
                     .subject_time
                     .or(meta.creation_time)
@@ -1190,6 +1219,20 @@ async fn sync_groups(client: &Arc<Client>, store: &Arc<Store>, tx: &UnboundedSen
 /// Stores one history-sync chunk: chat state, push names and messages.
 /// Returns the number of new messages.
 fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> usize {
+    for m in &history.phone_number_to_lid_mappings {
+        if let (Some(pn), Some(lid)) = (&m.pn_jid, &m.lid_jid) {
+            let _ = store.map_lid(lid, pn);
+        }
+    }
+    for c in &history.inline_contacts {
+        if let (Some(pn), Some(lid)) = (&c.pn_jid, &c.lid_jid) {
+            let _ = store.map_lid(lid, pn);
+        }
+        let name = c.full_name.clone().or_else(|| c.first_name.clone());
+        if let (Some(jid), Some(name)) = (c.pn_jid.as_ref().or(c.lid_jid.as_ref()), name) {
+            let _ = store.upsert_contact(jid, &name, false);
+        }
+    }
     for p in &history.pushnames {
         if let (Some(id), Some(name)) = (&p.id, &p.pushname) {
             let _ = store.upsert_contact(id, name, true);
@@ -1214,6 +1257,10 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
     }
     let mut imported = 0;
     for conv in &history.conversations {
+        let lid = conv.lid_jid.clone().filter(|_| !conv.id.ends_with("@lid"));
+        if let (Some(pn), Some(lid)) = (&conv.pn_jid, lid.as_ref().or(Some(&conv.id))) {
+            let _ = store.map_lid(lid, pn);
+        }
         // Prefer the phone-number address so names from the contact book match.
         let jid = match (&conv.pn_jid, conv.id.ends_with("@lid")) {
             (Some(pn), true) if !pn.is_empty() => pn.clone(),
@@ -1319,6 +1366,40 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
     imported
 }
 
+/// Learns LID ↔ phone-number pairs from a message's addressing.
+fn learn_addresses(src: &whatsapp_rust::wacore::types::message::MessageSource, store: &Store) {
+    let pairs = [
+        (Some(&src.sender), src.sender_alt.as_ref()),
+        (Some(&src.chat), src.recipient_alt.as_ref()),
+        (
+            Some(&src.chat),
+            src.sender_alt.as_ref().filter(|_| !src.is_group),
+        ),
+    ];
+    for (a, b) in pairs {
+        let (Some(a), Some(b)) = (a, b) else { continue };
+        let (a, b) = (a.to_non_ad_string(), b.to_non_ad_string());
+        let _ = if a.ends_with("@lid") {
+            store.map_lid(&a, &b)
+        } else {
+            store.map_lid(&b, &a)
+        };
+    }
+}
+
+fn learn_participants(list: &[whatsapp_rust::GroupParticipant], store: &Store) {
+    for p in list {
+        let lid = p.lid.as_ref().or(Some(&p.jid).filter(|j| j.is_lid()));
+        let pn = p
+            .phone_number
+            .as_ref()
+            .or(Some(&p.jid).filter(|j| !j.is_lid()));
+        if let (Some(lid), Some(pn)) = (lid, pn) {
+            let _ = store.map_lid(&lid.to_string(), &pn.to_string());
+        }
+    }
+}
+
 /// Replies to our own messages carry our JID (phone or LID); store "me" so
 /// the interface can say "You" without knowing our addresses.
 fn mark_own_quote(m: &mut Message, me: &[String]) {
@@ -1347,7 +1428,8 @@ async fn on_message(
     me: &[String],
 ) {
     let info = &inbound.info;
-    let chat = info.source.chat.to_string();
+    learn_addresses(&info.source, store);
+    let chat = store.canonical_jid(&info.source.chat.to_string());
     if !is_chat(&chat) {
         return;
     }
@@ -1364,7 +1446,7 @@ async fn on_message(
     let mut message = Message {
         id: info.id.to_string(),
         chat_jid: chat.clone(),
-        sender_jid: info.source.sender.to_string(),
+        sender_jid: info.source.sender.to_non_ad_string(),
         sender_name: info.push_name.clone(),
         from_me: info.source.is_from_me,
         ts: info.timestamp.timestamp(),
@@ -1468,22 +1550,34 @@ fn apply_change(
 }
 
 /// Adds a sticker (encoded `StickerMessage`) to the account's sticker list.
-fn remember_sticker(store: &Store, keys: Option<&[u8]>, ts: i64) {
-    let Some(keys) = keys else { return };
-    let Ok(sticker) = wa::message::StickerMessage::decode_from_slice(keys) else {
-        return;
-    };
+/// Saves the sticker of a received or sent message to the user's favourite
+/// stickers. Returns the sticker id.
+pub fn save_sticker_from_message(store: &Store, chat_jid: &str, id: &str) -> Result<String> {
+    let bad = || Error::Invalid("this message has no sticker to save".into());
+    let (kind, keys) = store.get_media(chat_jid, id)?.ok_or_else(bad)?;
+    if kind != "sticker" {
+        return Err(bad());
+    }
+    let ts = chrono::Utc::now().timestamp();
+    let sticker_id = remember_sticker(store, Some(&keys), ts).ok_or_else(bad)?;
+    store.set_sticker_favorite(&sticker_id, true)?;
+    Ok(sticker_id)
+}
+
+fn remember_sticker(store: &Store, keys: Option<&[u8]>, ts: i64) -> Option<String> {
+    let keys = keys?;
+    let sticker = wa::message::StickerMessage::decode_from_slice(keys).ok()?;
     // Animated Lottie stickers need a player we don't ship.
     if sticker.is_lottie == Some(true) {
-        return;
+        return None;
     }
-    let Some(sha) = sticker.file_sha256.as_deref().filter(|s| !s.is_empty()) else {
-        return;
-    };
+    let sha = sticker.file_sha256.as_deref().filter(|s| !s.is_empty())?;
     let id: String = sha.iter().map(|b| format!("{b:02x}")).collect();
     if let Err(e) = store.add_sticker(&id, keys, ts) {
         log::warn!("failed to remember sticker: {e}");
+        return None;
     }
+    Some(id)
 }
 
 /// The original sender, needed by app-state actions on others' group messages.
@@ -1642,7 +1736,8 @@ mod tests {
         );
         let chats = store.list_chats().unwrap();
         assert_eq!(chats.len(), 1);
-        assert_eq!(chats[0].name, "Uno");
+        // Not in the contact book: the person's own name, marked with ~.
+        assert_eq!(chats[0].name, "~Uno");
         assert_eq!(chats[0].unread, 1);
         assert!(chats[0].archived);
         assert_eq!(chats[0].last_preview, "chau");

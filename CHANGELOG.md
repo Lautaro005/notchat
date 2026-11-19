@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.4 — 2026-11-19
+
+Names you recognise, read state that follows your phone, and a smarter assistant.
+
+- **Contact names.** Chats, group senders, quotes and mentions use the name saved in your contacts. People you haven't saved show the name they set in WhatsApp with a ~ in front (~Juan). Group members that WhatsApp identifies by a private id are matched to their phone number when possible.
+- **Mentions.** @mentions in groups show the person's name instead of a number or id. Click one, or a sender's name, to see their name and phone number, copy the number or start a chat.
+- **Read on your phone, read here.** Messages you read on the phone or another device stop counting as unread in Notchat, even if it was closed at the time.
+- **Save stickers.** Right-click a sticker in a chat → Save sticker. It goes to your favourites in the Stickers tab.
+- **Lists in the chat header.** If a chat belongs to one of your lists, the list shows next to its name; click it to see that list.
+- **Even spacing.** Consecutive messages from the same person now sit as far apart as messages from different people.
+- **Right-click menus close** after you pick an option in a submenu (mute, add to list).
+- **Notchat AI understands WhatsApp better.** A new tool lists your unread messages; chat names are matched loosely (accents, ~, phone numbers); chat lines carry replies, attachments, edits and reactions; and the instructions are rewritten so small local models choose the right tool.
+
 ## 0.1.3 — 2026-11-18
 
 Message actions, a notes chat and a new look.

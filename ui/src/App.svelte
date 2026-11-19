@@ -20,7 +20,7 @@
    *  mark the event), then reply/edit/selection, then the open chat. */
   function onKey(e: KeyboardEvent) {
     if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
-    if (app.menu || app.confirm || app.prompt || app.choice || app.info || app.forward || app.lightbox) return;
+    if (app.menu || app.confirm || app.prompt || app.choice || app.info || app.forward || app.lightbox || app.person) return;
     if (app.settingsOpen) return;
     if (app.reply || app.editing) {
       app.reply = null;

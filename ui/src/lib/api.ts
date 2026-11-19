@@ -112,6 +112,23 @@ export interface Message {
   /** Pin timestamp, 0 when not pinned. */
   pinned: number;
   reactions: Reaction[];
+  /** Who each `@<number>` in the text is. */
+  mentions?: Person[];
+  /** The sender's phone number (`+…`), when known. */
+  sender_phone?: string;
+  /** Display name of whoever wrote the quoted message. */
+  quote_name?: string;
+}
+
+/** A WhatsApp user as shown: contact name, `~` + own name, or phone. */
+export interface Person {
+  jid: string;
+  /** The digits written after `@` in a mention. */
+  user: string;
+  name: string;
+  phone: string;
+  /** True when the name comes from the contact book. */
+  saved: boolean;
 }
 
 export interface Reaction {
@@ -267,6 +284,7 @@ export const api = {
   sendSticker: (jid: string, id: string) => invoke<Message>("sticker_send", { jid, id }),
   stickerFavorite: (id: string, favorite: boolean) => invoke<void>("sticker_favorite", { id, favorite }),
   removeSticker: (id: string) => invoke<void>("sticker_remove", { id }),
+  saveSticker: (jid: string, id: string) => invoke<string>("sticker_save", { jid, id }),
   notes: () => invoke<Note[]>("notes_list"),
   addNote: (text: string, color: NoteColor) => invoke<Note>("note_add", { text, color }),
   addNoteFile: (a: { text: string; name: string; mime: string; base64: string }) => invoke<Note>("note_add_file", a),

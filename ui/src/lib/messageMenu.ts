@@ -95,6 +95,14 @@ function saveMedia(m: Message) {
   void attempt(() => api.saveMedia(m.chat_jid, m.id), t("toast.saved"));
 }
 
+/** Keeps a sticker in the favourites so it can be sent later. */
+function saveSticker(m: Message) {
+  void attempt(async () => {
+    await api.saveSticker(m.chat_jid, m.id);
+    app.stickersVersion++;
+  }, t("msg.stickerSaved"));
+}
+
 /** The dropdown on a message, in WhatsApp's order. */
 export function messageMenu(m: Message, openReact: () => void): MenuItem[] {
   if (m.deleted) {
@@ -121,7 +129,11 @@ export function messageMenu(m: Message, openReact: () => void): MenuItem[] {
   ];
   if (m.text) items.push({ label: t("msg.copy"), icon: "copy", action: () => copyText([m]) });
   if (canEdit(m)) items.push({ label: t("msg.edit"), icon: "pencil", action: () => startEdit(m) });
-  if (m.has_media) items.push({ label: t("menu.save"), icon: "download", action: () => saveMedia(m) });
+  if (m.kind === "sticker" && m.has_media) {
+    items.push({ label: t("msg.saveSticker"), icon: "sticker", action: () => saveSticker(m) });
+  } else if (m.has_media) {
+    items.push({ label: t("menu.save"), icon: "download", action: () => saveMedia(m) });
+  }
   items.push(
     { label: t("msg.toNotes"), icon: "note", action: () => toNotes([m]) },
     { label: t("msg.info"), icon: "info", action: () => (app.info = m) },

@@ -111,6 +111,14 @@ async fn on_event(app: &AppHandle, event: WaEvent) {
             mentions_me,
             live,
         } => {
+            // Re-read it so names and mentions are resolved like the rest.
+            let message = state
+                .store
+                .get_message(&message.chat_jid, &message.id)
+                .ok()
+                .flatten()
+                .map(Box::new)
+                .unwrap_or(message);
             crate::autoreply::on_incoming(app, &state, &message, is_group, mentions_me, live);
             if live && !message.from_me && !muted(&state, &message.chat_jid) {
                 crate::notify::deliver(app, &state, &message, is_group, false);

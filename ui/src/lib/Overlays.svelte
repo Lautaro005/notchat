@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import ForwardDialog from "./ForwardDialog.svelte";
+  import PersonCard from "./PersonCard.svelte";
   import { app, chatTitle } from "./app.svelte";
   import { t, time, dayLabel } from "./i18n";
 
@@ -37,6 +38,7 @@
     else if (app.choice) closeChoice(null);
     else if (app.info) app.info = null;
     else if (app.forward) app.forward = null;
+    else if (app.person) app.person = null;
     else return;
     e.preventDefault();
   }
@@ -54,6 +56,10 @@
   <!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
   <div class="catcher" onclick={() => (app.menu = null)} oncontextmenu={(e) => { e.preventDefault(); app.menu = null; }}></div>
   <ContextMenu items={app.menu.items} x={app.menu.x} y={app.menu.y} onclose={() => (app.menu = null)} />
+{/if}
+
+{#if app.person}
+  <PersonCard p={app.person.p} x={app.person.x} y={app.person.y} />
 {/if}
 
 {#if app.confirm}

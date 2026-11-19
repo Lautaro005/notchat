@@ -23,7 +23,7 @@
     togglePick,
   } from "./messageMenu";
   import { bytes, dayKey, dayLabel, t, tf, time, type Key } from "./i18n";
-  import type { Message } from "./api";
+  import type { Message, Person } from "./api";
 
   let scroller: HTMLElement | undefined = $state();
   let composer: Composer | undefined = $state();
@@ -38,6 +38,8 @@
   const isGroup = $derived(chat?.is_group ?? app.selected?.endsWith("@g.us") ?? false);
   const picked = $derived(app.messages.filter((m) => app.picked.includes(m.id)));
   const pin = $derived(app.pinned.length ? app.pinned[pinIndex % app.pinned.length] : null);
+  /** The user's lists ("tags") this chat belongs to. */
+  const tags = $derived(app.selected ? app.lists.filter((l) => l.jids.includes(app.selected!)) : []);
 
   const visual = new Set(["image", "video", "sticker"]);
 
@@ -82,7 +84,41 @@
     if (original) return original.from_me ? t("chat.you") : sender(original);
     if (m.quote_sender === "me") return t("chat.you");
     if (!isGroup) return title;
-    return m.quote_sender ? nameOf(m.quote_sender) : "";
+    return m.quote_name || (m.quote_sender ? nameOf(m.quote_sender) : "");
+  }
+
+  /** The text cut into plain runs and `@mentions` that know who they are. */
+  function parts(m: Message): ({ text: string } | { p: Person })[] {
+    const known = new Map((m.mentions ?? []).map((p) => [p.user, p]));
+    if (!known.size) return [{ text: m.text }];
+    const out: ({ text: string } | { p: Person })[] = [];
+    let last = 0;
+    for (const match of m.text.matchAll(/@(\d{5,})/g)) {
+      const p = known.get(match[1]);
+      if (!p || match.index === undefined) continue;
+      if (match.index > last) out.push({ text: m.text.slice(last, match.index) });
+      out.push({ p });
+      last = match.index + match[0].length;
+    }
+    out.push({ text: m.text.slice(last) });
+    return out;
+  }
+
+  function showPerson(e: MouseEvent, p: Person) {
+    e.stopPropagation();
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    app.person = { p, x: r.left, y: r.bottom + 6 };
+  }
+
+  function senderPerson(m: Message): Person {
+    const name = sender(m);
+    return {
+      jid: m.sender_jid,
+      user: m.sender_jid.split("@")[0],
+      name,
+      phone: m.sender_phone ?? "",
+      saved: !!name && !name.startsWith("~") && !name.startsWith("+"),
+    };
   }
 
   function quotePreview(m: Message): string {
@@ -220,6 +256,15 @@
             </span>
           </span>
         </button>
+        {#if tags.length}
+          <div class="tags" aria-label={t("chat.tags")}>
+            {#each tags as l (l.id)}
+              <button class="tag" onclick={() => (app.filter = `list:${l.id}`)} title={t("chat.showList")}>
+                <Icon name="list" size={12} />{l.name}
+              </button>
+            {/each}
+          </div>
+        {/if}
         {#if chat && (isGroup ? app.auto.groups : app.auto.chats) === "selected"}
           <button
             class="autobtn"
@@ -290,7 +335,7 @@
                 class:gone={m.deleted}
               >
                 {#if isGroup && !m.from_me && first}
-                  <span class="who" style:--h={hue(m.sender_jid)}>{sender(m)}</span>
+                  <button class="who" style:--h={hue(m.sender_jid)} onclick={(e) => showPerson(e, senderPerson(m))}>{sender(m)}</button>
                 {/if}
                 {#if m.deleted}
                   <span class="deleted"><Icon name="close" size={13} />{t("msg.deleted")}</span>
@@ -320,7 +365,7 @@
                   {:else if m.kind !== "text"}
                     <span class="kind">{t(`kind.${m.kind}` as Key)}</span>
                   {/if}
-                  {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{m.text}</span>{/if}
+                  {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{#each parts(m) as part, j (j)}{#if "p" in part}<button class="mention" onclick={(e) => showPerson(e, part.p)}>@{part.p.name || part.p.phone || part.p.user}</button>{:else}{part.text}{/if}{/each}</span>{/if}
                 {/if}
                 <span class="meta num">
                   {#if m.starred}<Icon name="star" size={11} />{/if}
@@ -632,19 +677,16 @@
     color: var(--text-2);
   }
 
-  /* A run of messages from the same sender sits 3px apart; runs sit 14px
-     apart. Corners show where a run starts and ends. */
+  /* Every message stands on its own, 12px apart, whoever sent it. Only the
+     first bubble of a run keeps the small tail corner. */
   .msg {
     position: relative;
     display: flex;
     align-items: center;
     gap: 8px;
-    margin-top: 3px;
+    margin-top: 12px;
     border-radius: 12px;
     transition: background 200ms var(--ease);
-  }
-  .msg.first {
-    margin-top: 14px;
   }
   .msg.reacted {
     margin-bottom: 18px;
@@ -687,7 +729,7 @@
     position: relative;
     max-width: 100%;
     padding: 7px 12px 7px;
-    border-radius: var(--rs) var(--r) var(--r) var(--rs);
+    border-radius: var(--r);
     background: var(--bubble);
     box-shadow: 0 1px 1.5px rgb(20 10 60 / 0.05), 0 0 0 1px var(--bubble-line);
     font-size: 14px;
@@ -696,19 +738,17 @@
     -webkit-user-select: text;
     cursor: text;
   }
-  /* Joined edges stay tight; the run's last bubble keeps a small bottom
-     corner as its tail. */
   .first .bubble {
-    border-top-left-radius: var(--r);
+    border-top-left-radius: var(--rs);
   }
   .me .bubble {
-    border-radius: var(--r) var(--rs) var(--rs) var(--r);
     background: var(--mine);
     color: var(--on-mine);
     box-shadow: 0 1px 2px rgb(30 15 110 / 0.18);
   }
   .me.first .bubble {
-    border-top-right-radius: var(--r);
+    border-top-left-radius: var(--r);
+    border-top-right-radius: var(--rs);
   }
   .bubble.visual {
     padding: 4px;
@@ -745,10 +785,63 @@
   }
   .who {
     display: block;
+    max-width: 100%;
     margin-bottom: 2px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
     font-size: 12px;
     font-weight: 600;
+    text-align: left;
     color: oklch(0.56 0.14 var(--h));
+    cursor: pointer;
+  }
+  .who:hover {
+    text-decoration: underline;
+  }
+  .mention {
+    display: inline;
+    padding: 0 1px;
+    border-radius: 4px;
+    font: inherit;
+    font-weight: 600;
+    color: var(--accent);
+    cursor: pointer;
+  }
+  .me .mention {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .mention:hover {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+  .tags {
+    flex: none;
+    display: flex;
+    gap: 4px;
+    max-width: 40%;
+    overflow: hidden;
+  }
+  .tag {
+    flex: none;
+    max-width: 140px;
+    height: 24px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 9px 0 7px;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+    color: var(--accent);
+    font-size: 11.5px;
+    font-weight: 600;
+  }
+  .tag:hover {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
   }
   .fwd,
   .deleted {
