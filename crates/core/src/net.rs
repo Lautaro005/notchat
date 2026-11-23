@@ -253,6 +253,12 @@ fn unwrap_ddg_redirect(href: &str) -> Option<String> {
 }
 
 pub async fn web_search(query: &str) -> Result<Vec<SearchHit>> {
+    web_search_recent(query, "any").await
+}
+
+/// Like [`web_search`], limited to results from the last `day`, `week`,
+/// `month` or `year` (anything else: no limit).
+pub async fn web_search_recent(query: &str, recency: &str) -> Result<Vec<SearchHit>> {
     let query = query.trim();
     if query.is_empty() || query.len() > 300 {
         return Err(Error::Invalid("search query".into()));
@@ -260,8 +266,29 @@ pub async fn web_search(query: &str) -> Result<Vec<SearchHit>> {
     let mut url =
         Url::parse("https://html.duckduckgo.com/html/").map_err(|e| Error::Net(e.to_string()))?;
     url.query_pairs_mut().append_pair("q", query);
+    let df = match recency {
+        "day" => "d",
+        "week" => "w",
+        "month" => "m",
+        "year" => "y",
+        _ => "",
+    };
+    if !df.is_empty() {
+        url.query_pairs_mut().append_pair("df", df);
+    }
     let (_, html) = fetch(url.as_str()).await?;
     Ok(parse_search(&html))
+}
+
+/// The `<title>` of an HTML page, cleaned up.
+pub fn page_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let start = lower.find("<title")?;
+    let open_end = start + lower[start..].find('>')? + 1;
+    let close = open_end + lower[open_end..].find("</title>")?;
+    let title = html_to_text(&html[open_end..close], 200);
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!title.is_empty()).then_some(title)
 }
 
 #[cfg(test)]

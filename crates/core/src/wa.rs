@@ -232,7 +232,21 @@ fn size_of(len: Option<u64>) -> i64 {
 /// reply context.
 fn describe(message: &wa::Message) -> Described {
     let base = message.get_base_message();
-    with_context(describe_body(base), base)
+    let mut d = with_context(describe_body(base), base);
+    // View-once media can only be opened on the phone: keep the message as
+    // a placeholder (with any caption) instead of the media itself.
+    if message.is_view_once() && d.kind != "text" {
+        d.mime = match d.kind {
+            "video" => "video/*".into(),
+            "audio" | "voice" => "audio/*".into(),
+            _ => "image/*".into(),
+        };
+        d.kind = "viewonce";
+        d.keys = None;
+        d.file_name.clear();
+        d.size = 0;
+    }
+    d
 }
 
 fn describe_body(message: &wa::Message) -> Described {
@@ -1166,6 +1180,17 @@ async fn handle_event(
                 on_message(inbound, client, store, tx, &me).await;
             }
         }
+        // Linked devices never receive view-once media, only a notice that
+        // it exists. Show it as a placeholder so the message isn't lost.
+        Event::UndecryptableMessage(u)
+            if u.is_unavailable
+                && matches!(
+                    u.unavailable_type,
+                    whatsapp_rust::wacore::types::events::UnavailableType::ViewOnce
+                ) =>
+        {
+            store_view_once(&u.info, store, tx);
+        }
         Event::HistorySync(lazy) => {
             let progress = lazy.progress();
             if let Some(history) = lazy.get() {
@@ -1633,6 +1658,34 @@ async fn on_message(
     });
 }
 
+fn store_view_once(info: &MessageInfo, store: &Store, tx: &UnboundedSender<WaEvent>) {
+    learn_addresses(&info.source, store);
+    let chat = store.canonical_jid(&info.source.chat.to_string());
+    if !is_chat(&chat) {
+        return;
+    }
+    let is_group = info.source.is_group;
+    let message = Message {
+        id: info.id.to_string(),
+        chat_jid: chat,
+        sender_jid: info.source.sender.to_non_ad_string(),
+        sender_name: info.push_name.clone(),
+        from_me: info.source.is_from_me,
+        ts: info.timestamp.timestamp(),
+        kind: "viewonce".into(),
+        mime: "image/*".into(),
+        ..Default::default()
+    };
+    if let Ok(true) = store.insert_message_full(&message, is_group, None, None, true) {
+        let _ = tx.send(WaEvent::Message {
+            mentions_me: false,
+            message: Box::new(message),
+            is_group,
+            live: !info.is_offline,
+        });
+    }
+}
+
 /// Applies reactions, edits and deletions to stored messages. Returns true
 /// when the message was one of those (and so has nothing else to show).
 fn apply_change(
@@ -1794,6 +1847,28 @@ mod tests {
         assert_eq!(user_part("5491100:12@s.whatsapp.net"), "5491100");
         assert_eq!(user_part("5491100@s.whatsapp.net"), "5491100");
         assert_eq!(user_part("123@lid"), "123");
+    }
+
+    #[test]
+    fn view_once_media_becomes_a_placeholder() {
+        let inner = wa::Message {
+            image_message: MessageField::some(wa::message::ImageMessage {
+                caption: Some("mirá".into()),
+                media_key: Some(vec![1; 32]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let msg = wa::Message {
+            view_once_message_v2: MessageField::some(wa::message::FutureProofMessage {
+                message: MessageField::some(inner),
+            }),
+            ..Default::default()
+        };
+        let d = describe(&msg);
+        assert_eq!(d.kind, "viewonce");
+        assert!(d.keys.is_none(), "media keys are never kept");
+        assert_eq!(d.mime, "image/*");
     }
 
     #[test]

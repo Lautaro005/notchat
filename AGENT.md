@@ -115,6 +115,9 @@ npm --prefix ui run check
 - Al conectar, `learn_known_addresses` completa `lid_map` con `client.get_lid_pn_entry`.
 - Historial: los vínculos nuevos piden el historial completo (`DevicePropsOverride`); para el resto, `WaClient::backfill_history` pide al teléfono (`fetch_message_history`) de a 100 mensajes por chat, con pausas; `history_done` marca los chats completos. Los chunks `ON_DEMAND` no tocan el estado del chat. Ajuste `full_history` (prendido por defecto).
 - Referencias de otros clientes: `docs/references.md`.
+- Fotos de una sola vista: los dispositivos vinculados solo reciben un aviso (`UndecryptableMessage` con `UnavailableType::ViewOnce`); se guardan como `kind = "viewonce"` sin claves de descarga.
+- Links: `ui/src/lib/md.ts` (Markdown seguro de la IA y `linkParts` para mensajes); todo `<a>` se abre con el comando `open_url` (solo http(s)/mailto, `/usr/bin/open` con un argumento). Sin plugin nuevo.
+- IA: `Tools::call_traced` devuelve un `meta` JSON por herramienta (chats, fuentes numeradas, conteos) que se guarda en la fila `tool` y la UI dibuja como tarjetas y pills. Contexto: `agent::fit_context` (presupuesto `CONTEXT_CHARS`), `MAX_TOOL_CHARS`, caché por turno y `tool_note` para recordar consultas anteriores. `date_note` va justo antes del último mensaje del usuario. Opciones: el modelo escribe `[[opción]]`.
 - Puertos de los proveedores locales: ajuste `ai_ports` (`ProviderPorts`), siempre en 127.0.0.1 y ≥ 1024.
 - Vista previa del notch en el navegador: `http://127.0.0.1:1420/?view=notch#notch`.
 - Actualizaciones: `crates/core/src/update.rs` (verifica `SHA256SUMS` del release) y `src-tauri/src/updater.rs` (reemplaza el `.app` al salir).

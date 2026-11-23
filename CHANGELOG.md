@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.6 — 2026-11-23
+
+A clearer conversation and a much better-looking assistant.
+
+- **Unread divider.** Opening a chat with unread messages lands on a "N unread messages" bar above the first one, instead of the end. It goes away once you scroll to the bottom.
+- **Clickable links** in messages; they open in your browser.
+- **View-once photos and videos** now show up as a message ("View-once photo · can only be opened on your phone"). WhatsApp never sends their content to linked devices, so they can't be opened on the Mac.
+- **Notchat AI answers are formatted.** Markdown with small headings, bold, lists and quotes, on a light card. When the assistant offers options they appear as buttons. Chats it looked at show as small cards you can click to open; "read 30 messages from Ana" links to the chat.
+- **Web sources.** Facts from the web carry a small source number (not copied with the text), and the sources appear as pills under the answer with the exact page. URLs are left out of the answer unless you ask for them.
+- **Today's date, always.** The assistant gets today's date with every message and searches news with a recency filter, so "today" means today.
+- **No more running out of context.** Long conversations are trimmed to fit small models, tool results are capped, repeated lookups reuse the first result, and earlier lookups are remembered as short notes, so the assistant re-checks instead of inventing.
+- **@ in the assistant** suggests your chats and groups to name exactly who you mean.
+
 ## 0.1.5 — 2026-11-23
 
 Read state, names and history that match your phone.

@@ -155,6 +155,7 @@ pub fn run() {
             chats::chat_pin,
             chats::chat_mute,
             chats::chat_mark_unread,
+            commands::open_url,
             chats::mark_chats_read,
             chats::refresh_now,
             chats::request_older,

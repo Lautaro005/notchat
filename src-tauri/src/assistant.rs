@@ -17,7 +17,7 @@ pub const EVENT_AI_CHANGED: &str = "ai-changed";
 pub const EVENT_AI_BUSY: &str = "ai-busy";
 pub const KEY_AI_CONFIG: &str = "ai_config";
 
-const HISTORY_TURNS: u32 = 24;
+const HISTORY_TURNS: u32 = 40;
 
 /// A WhatsApp message the assistant prepared, shown to the user as a card.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -129,9 +129,27 @@ pub async fn resolve_action(
 
 fn history(rows: &[AiMessage]) -> Vec<ChatMsg> {
     let last_user = rows.iter().rposition(|m| m.role == "user");
+    // Tool results of the last few turns are remembered as one-line notes.
+    let recent_from = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == "user")
+        .map(|(i, _)| i)
+        .rev()
+        .nth(2)
+        .unwrap_or(0);
     let mut out = Vec::new();
     for (i, row) in rows.iter().enumerate() {
+        if Some(i) == last_user {
+            out.push(ChatMsg::new("system", agent::date_note()));
+        }
         match row.role.as_str() {
+            "tool" if i >= recent_from && Some(i) < last_user.map(|u| u + 1) => {
+                let meta: serde_json::Value = serde_json::from_str(&row.meta).unwrap_or_default();
+                if let Some(note) = agent::tool_note(&row.content, &meta) {
+                    out.push(ChatMsg::new("system", format!("[Earlier: {note}]")));
+                }
+            }
             "assistant" => out.push(ChatMsg::new("assistant", row.content.clone())),
             "user" => {
                 let attachments: Vec<Attachment> =
@@ -194,6 +212,8 @@ async fn turn(app: &AppHandle, state: &Arc<AppState>, lang: &str) -> Result<()> 
         agent::assistant_system_prompt(language, cfg.web_access),
     )];
     messages.extend(history(&rows));
+    let messages_fit = agent::fit_context(messages, agent::CONTEXT_CHARS);
+    let mut messages = messages_fit;
 
     let outbox = AppOutbox {
         app: app.clone(),
@@ -211,9 +231,12 @@ async fn turn(app: &AppHandle, state: &Arc<AppState>, lang: &str) -> Result<()> 
         &move |token| {
             let _ = token_app.emit(EVENT_AI_TOKEN, token);
         },
-        &move |name, _args| {
-            // Record which tool ran (not its arguments or results).
-            let _ = tool_state.store.add_ai_message("tool", name, now(), "");
+        &move |name, meta| {
+            // Record which tool ran and a summary of what it found (chats,
+            // sources) for the app to draw; never the full results.
+            let _ = tool_state
+                .store
+                .add_ai_message("tool", name, now(), &meta.to_string());
             let _ = tool_app.emit(EVENT_AI_CHANGED, ());
         },
     )
@@ -252,9 +275,12 @@ mod tests {
             row("user", "second", img),
         ];
         let h = history(&rows);
-        assert_eq!(h.len(), 3);
+        // first, ok, today's date note, second
+        assert_eq!(h.len(), 4);
         assert!(h[0].content.contains("attached earlier: a.txt"));
         assert!(!h[0].content.contains("CONTENT"));
-        assert_eq!(h[2].images.len(), 1);
+        assert_eq!(h[2].role, "system");
+        assert!(h[2].content.starts_with("[Today is"));
+        assert_eq!(h[3].images.len(), 1);
     }
 }

@@ -126,6 +126,10 @@ export const app = $state({
   backfill: null as null | { done: number; total: number },
   /** Waiting for older messages of the open chat from the phone. */
   fetchingOlder: false,
+  /** Where the unread messages start in the open chat, until read through. */
+  unreadMark: null as null | { jid: string; count: number },
+  /** Bumped to ask the open chat to scroll to its unread divider. */
+  jumpUnread: 0,
   /** A mentioned person's card: name, phone, actions. */
   person: null as null | { p: Person; x: number; y: number },
   notes: [] as Note[],
@@ -243,6 +247,7 @@ export function openSettings(section = "general") {
 }
 
 function resetChatState() {
+  app.unreadMark = null;
   app.reply = null;
   app.editing = null;
   app.selecting = false;
@@ -257,6 +262,8 @@ export async function selectChat(jid: string) {
   }
   app.selected = jid;
   app.messages = [];
+  const before = app.chats.find((c) => c.jid === jid);
+  app.unreadMark = before && before.unread > 0 ? { jid, count: before.unread } : null;
   if (jid === AI) return;
   if (jid === NOTES) {
     app.notes = await api.notes();
@@ -268,7 +275,8 @@ export async function selectChat(jid: string) {
   if (app.selected !== jid) return;
   app.messages = page;
   app.hasOlder = page.length === PAGE;
-  app.tail++;
+  if (app.unreadMark) app.jumpUnread++;
+  else app.tail++;
   await api.markRead(jid);
 }
 

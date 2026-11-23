@@ -72,6 +72,8 @@ const messages: Record<string, Message[]> = {
     m("2b", chats[1].jid, 2600, "", false, { kind: "sticker", has_media: true, sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
     m("3", chats[1].jid, 2400, "Falta uno para completar", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R.", forwarded: true }),
     m("3b", chats[1].jid, 2390, "Alguien que traiga pelota", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
+    m("3d", chats[1].jid, 2350, "Les paso la cancha: https://maps.app.goo.gl/futbol5palermo", false, { sender_jid: "5491155550009@s.whatsapp.net", sender_name: "Tomás" }),
+    m("3e", chats[1].jid, 2320, "", false, { kind: "viewonce", mime: "image/*", sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
     m("3c", chats[1].jid, 2300, "@5491155550009 vos tenías una, ¿no? Si no @48291 la trae", false, {
       sender_jid: "77120@lid",
       sender_name: "~Nacho",
@@ -108,11 +110,15 @@ const status: Status =
 
 const aiRows = [
   { id: 1, role: "user", content: "¿Qué me dijo Ana sobre el viernes? Y decile que llego 20:15.", ts: now - 120, meta: "" },
-  { id: 2, role: "tool", content: "read_chat", ts: now - 118, meta: "" },
+  { id: 2, role: "tool", content: "read_chat", ts: now - 118, meta: JSON.stringify({ chat: { jid: chats[0].jid, name: "Ana Suárez", group: false }, count: 30 }) },
   { id: 3, role: "assistant", content: "Ana te preguntó si ibas el viernes y quedaron en verse a las 8. Te pasó la dirección por foto.", ts: now - 110, meta: "" },
   { id: 4, role: "tool", content: "send_message", ts: now - 108, meta: "" },
   { id: 5, role: "action", content: "", ts: now - 107, meta: JSON.stringify({ chat_jid: chats[0].jid, chat_name: "Ana Suárez", text: "Llego 20:15, estoy saliendo de una reunión.", state: "pending" }) },
   { id: 6, role: "assistant", content: "Te dejé el mensaje listo para que lo confirmes.", ts: now - 100, meta: "" },
+  { id: 7, role: "user", content: "¿Qué hay de nuevo? Y @Fútbol de los jueves qué dicen", ts: now - 80, meta: "" },
+  { id: 8, role: "tool", content: "list_unread", ts: now - 78, meta: JSON.stringify({ chats: [{ jid: chats[0].jid, name: "Ana Suárez", unread: 2, group: false, preview: "" }, { jid: chats[1].jid, name: "Fútbol de los jueves", unread: 5, group: true, preview: "" }] }) },
+  { id: 9, role: "tool", content: "web_search", ts: now - 76, meta: JSON.stringify({ query: "pronóstico Buenos Aires jueves", sources: [{ n: 1, title: "Pronóstico extendido para Buenos Aires", url: "https://www.smn.gob.ar/pronostico" }, { n: 2, title: "Lluvias el jueves por la noche en AMBA", url: "https://www.lanacion.com.ar/sociedad/clima-jueves" }] }) },
+  { id: 10, role: "assistant", content: "### Sin leer\n- **Ana Suárez** — confirma la cena del viernes a las 8.\n- **Fútbol de los jueves** — falta uno para completar el partido de las 21; *Lucía* pregunta quién lleva pelota.\n\n### El jueves\nSe esperan lluvias por la noche [2] y unos 14 °C a las 21 [1], así que conviene confirmar la cancha techada.\n\n¿Querés que haga algo?\n[[Responder a Ana]] [[Avisar al grupo]] [[Ver todos los no leídos]]", ts: now - 70, meta: "" },
 ];
 
 const providers = [

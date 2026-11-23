@@ -24,6 +24,7 @@
   } from "./messageMenu";
   import { bytes, dayKey, dayLabel, t, tf, time, type Key } from "./i18n";
   import type { Message, Person } from "./api";
+  import { linkParts } from "./md";
 
   let scroller: HTMLElement | undefined = $state();
   let composer: Composer | undefined = $state();
@@ -49,6 +50,48 @@
     void tick().then(() => scroller?.scrollTo({ top: scroller.scrollHeight }));
   });
 
+  /** The first unread message: the count-th incoming message from the end. */
+  const firstUnread = $derived.by(() => {
+    const mark = app.unreadMark;
+    if (!mark || mark.jid !== app.selected) return null;
+    let seen = 0;
+    for (let i = app.messages.length - 1; i >= 0; i--) {
+      if (!app.messages[i].from_me && ++seen === mark.count) return app.messages[i].id;
+    }
+    return app.messages.find((m) => !m.from_me)?.id ?? null;
+  });
+
+  // Only scrolling done by the user clears the divider: not our own jump,
+  // nor images that finish loading and move things around.
+  let userScrolled = false;
+  function userScroll() {
+    userScrolled = true;
+    requestAnimationFrame(clearAtEnd);
+  }
+
+  /** Reading down to the end clears the unread divider. */
+  function clearAtEnd() {
+    if (
+      scroller &&
+      app.unreadMark &&
+      userScrolled &&
+      scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 8
+    ) {
+      app.unreadMark = null;
+    }
+  }
+
+  // Opening a chat with unread messages lands on the divider, not the end.
+  $effect(() => {
+    if (!app.jumpUnread) return;
+    userScrolled = false;
+    void tick().then(() => {
+      const el = document.getElementById("unread-divider");
+      if (!el || !scroller) return scroller?.scrollTo({ top: scroller.scrollHeight });
+      scroller.scrollTop = el.offsetTop - scroller.clientHeight / 3;
+    });
+  });
+
   $effect(() => {
     void app.selected;
     pinIndex = 0;
@@ -64,6 +107,7 @@
   }
 
   function onScroll() {
+    clearAtEnd();
     if (!scroller || scroller.scrollTop >= 120 || app.loadingOlder) return;
     if (app.hasOlder) void older();
     else if (app.messages.length > 0) void fetchOlderFromPhone();
@@ -89,8 +133,14 @@
     return m.quote_name || (m.quote_sender ? nameOf(m.quote_sender) : "");
   }
 
-  /** The text cut into plain runs and `@mentions` that know who they are. */
-  function parts(m: Message): ({ text: string } | { p: Person })[] {
+  type Part = { text: string } | { p: Person } | { url: string; label: string };
+
+  /** The text cut into plain runs, links and `@mentions` that know who they are. */
+  function parts(m: Message): Part[] {
+    return mentionParts(m).flatMap((part): Part[] => ("text" in part ? linkParts(part.text) : [part]));
+  }
+
+  function mentionParts(m: Message): ({ text: string } | { p: Person })[] {
     const known = new Map((m.mentions ?? []).map((p) => [p.user, p]));
     if (!known.size) return [{ text: m.text }];
     const out: ({ text: string } | { p: Person })[] = [];
@@ -298,7 +348,18 @@
         </button>
       {/if}
 
-      <div class="log scroll" class:selecting={app.selecting} bind:this={scroller} onscroll={onScroll}>
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="log scroll"
+        role="log"
+        aria-label={title}
+        class:selecting={app.selecting}
+        bind:this={scroller}
+        onscroll={onScroll}
+        onwheel={userScroll}
+        ontouchmove={userScroll}
+        onkeydown={userScroll}
+      >
         {#if app.fetchingOlder}
           <p class="older phone" role="status"><span class="spin" aria-hidden="true"></span>{t("chat.olderPhone")}</p>
         {:else if app.hasOlder}
@@ -309,6 +370,11 @@
           {@const next = app.messages[i + 1]}
           {#if !prev || dayKey(prev.ts) !== dayKey(m.ts)}
             <div class="day"><span>{dayLabel(m.ts)}</span></div>
+          {/if}
+          {#if m.id === firstUnread && app.unreadMark}
+            <div class="unread-divider" id="unread-divider" role="status">
+              <span>{app.unreadMark.count === 1 ? t("chat.unreadOne") : tf("chat.unreadMany", { n: app.unreadMark.count })}</span>
+            </div>
           {/if}
           {@const first = !sameRun(prev, m)}
           {@const last = !sameRun(m, next)}
@@ -366,10 +432,18 @@
                       </span>
                       {#if m.has_media}<Icon name="download" size={17} />{/if}
                     </button>
+                  {:else if m.kind === "viewonce"}
+                    <span class="viewonce">
+                      <span class="vo-ic"><Icon name={m.mime.startsWith("video") ? "camera" : "image"} size={17} /><b>1</b></span>
+                      <span class="vo-meta">
+                        <strong>{m.mime.startsWith("video") ? t("msg.viewOnceVideo") : t("msg.viewOncePhoto")}</strong>
+                        <small>{t("msg.viewOnceHint")}</small>
+                      </span>
+                    </span>
                   {:else if m.kind !== "text"}
                     <span class="kind">{t(`kind.${m.kind}` as Key)}</span>
                   {/if}
-                  {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{#each parts(m) as part, j (j)}{#if "p" in part}<button class="mention" onclick={(e) => showPerson(e, part.p)}>@{part.p.name || part.p.phone || part.p.user}</button>{:else}{part.text}{/if}{/each}</span>{/if}
+                  {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{#each parts(m) as part, j (j)}{#if "p" in part}<button class="mention" onclick={(e) => showPerson(e, part.p)}>@{part.p.name || part.p.phone || part.p.user}</button>{:else if "url" in part}<a class="link" href={part.url} rel="noreferrer" onclick={(e) => e.stopPropagation()}>{part.label}</a>{:else}{part.text}{/if}{/each}</span>{/if}
                 {/if}
                 <span class="meta num">
                   {#if m.starred}<Icon name="star" size={11} />{/if}
@@ -827,6 +901,76 @@
   }
   .who:hover {
     text-decoration: underline;
+  }
+  .link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent);
+    text-underline-offset: 2px;
+    overflow-wrap: anywhere;
+    cursor: pointer;
+  }
+  .me .link {
+    color: inherit;
+    text-decoration-color: currentColor;
+  }
+  .unread-divider {
+    display: flex;
+    justify-content: center;
+    margin: 18px -16px 2px;
+    padding: 5px 0;
+    background: color-mix(in srgb, var(--accent) 9%, transparent);
+  }
+  .unread-divider span {
+    padding: 3px 12px;
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: 0 0 0 1px var(--line);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .viewonce {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px 4px 2px 0;
+  }
+  .vo-ic {
+    position: relative;
+    width: 38px;
+    height: 38px;
+    flex: none;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1.5px dashed currentColor;
+    opacity: 0.85;
+  }
+  .vo-ic b {
+    position: absolute;
+    right: -3px;
+    bottom: -3px;
+    width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: 10px;
+  }
+  .vo-meta {
+    display: grid;
+    gap: 1px;
+  }
+  .vo-meta strong {
+    font-size: 13.5px;
+    font-weight: 600;
+  }
+  .vo-meta small {
+    font-size: 11.5px;
+    opacity: 0.7;
   }
   .mention {
     display: inline;

@@ -302,6 +302,7 @@ export const api = {
   mute: (jid: string, until: number) => invoke<void>("chat_mute", { jid, until }),
   markUnread: (jid: string, unread: boolean) => invoke<void>("chat_mark_unread", { jid, unread }),
   markChatsRead: (jids: string[]) => invoke<void>("mark_chats_read", { jids }),
+  openUrl: (url: string) => invoke<void>("open_url", { url }),
   refreshNow: () => invoke<void>("refresh_now"),
   requestOlder: (jid: string) => invoke<boolean>("request_older", { jid }),
   backfillRunning: () => invoke<boolean>("history_backfill_state"),

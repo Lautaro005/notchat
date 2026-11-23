@@ -432,3 +432,19 @@ mod tests {
         assert!(check_jid(&format!("{}@g.us", "1".repeat(200))).is_err());
     }
 }
+
+/// Opens a web link in the default browser. Only http(s) and mailto links,
+/// checked here; the URL is passed as a single argument, never to a shell.
+#[tauri::command]
+pub fn open_url(url: String) -> Result<()> {
+    let ok_scheme =
+        url.starts_with("https://") || url.starts_with("http://") || url.starts_with("mailto:");
+    if !ok_scheme || url.len() > 2048 || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(Error::Invalid("link".into()));
+    }
+    std::process::Command::new("/usr/bin/open")
+        .arg(&url)
+        .spawn()
+        .map_err(|e| Error::Invalid(format!("could not open the link: {e}")))?;
+    Ok(())
+}

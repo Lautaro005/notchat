@@ -8,10 +8,23 @@
   import Overlays from "./lib/Overlays.svelte";
   import Notes from "./lib/Notes.svelte";
   import { AI, NOTES, app, closeChat, init } from "./lib/app.svelte";
+  import { api, native } from "./lib/api";
 
   let ready = $state(false);
 
+  /** Links anywhere in the app open in the default browser. */
+  function onLink(e: MouseEvent) {
+    const a = (e.target as HTMLElement | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+    if (!a) return;
+    const href = a.getAttribute("href") ?? "";
+    if (!/^(https?:|mailto:)/i.test(href)) return;
+    e.preventDefault();
+    if (native) void api.openUrl(href).catch(() => {});
+    else window.open(href, "_blank", "noopener");
+  }
+
   onMount(async () => {
+    document.addEventListener("click", onLink);
     await init();
     ready = true;
   });

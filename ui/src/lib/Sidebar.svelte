@@ -49,9 +49,9 @@
   /** Media-only messages are stored as "[kind]"; show them in the user's language. */
   function preview(text: string): { icon: string | null; text: string; italic: boolean } {
     if (text === "[deleted]") return { icon: null, text: t("msg.deleted"), italic: true };
-    const kind = /^\[(image|video|audio|voice|document|sticker)\]$/.exec(text)?.[1];
+    const kind = /^\[(image|video|audio|voice|document|sticker|viewonce)\]$/.exec(text)?.[1];
     if (!kind) return { icon: null, text, italic: false };
-    const icons: Record<string, string> = { image: "image", video: "camera", audio: "mic", voice: "mic", document: "doc", sticker: "sticker" };
+    const icons: Record<string, string> = { image: "image", video: "camera", audio: "mic", voice: "mic", document: "doc", sticker: "sticker", viewonce: "image" };
     const icon = icons[kind] ?? null;
     return { icon, text: t(`kind.${kind}` as Key), italic: false };
   }

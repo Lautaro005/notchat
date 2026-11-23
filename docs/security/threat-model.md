@@ -58,6 +58,8 @@ All files live in `~/Library/Application Support/app.notchat.desktop/` (`0700`).
 | T14 | Information disclosure | Downloaded photos and files read from disk | Owner-only `0600` files in a `0700` folder, names are hashes (no numbers or chat ids); can be cleared from Settings → Storage |
 | T15 | Tampering | Malicious update | HTTPS only, release tag must be newer, archive SHA-256 checked against the published `SHA256SUMS` before unpacking; bundle swap runs with paths passed as arguments |
 | T16 | Information disclosure | Media rendered as active content in the webview | Only `image/`, `video/` and `audio/` types are handed to the webview, as `data:` URLs in media elements; CSP `media-src` limited to `self`, `data:` and `blob:` |
+| T17 | Tampering / spoofing | A link in a message or in an AI answer runs code or opens a local file | Links open only when clicked, in the default browser; only `http(s)` and `mailto:` are accepted (checked in the webview and again in the `open_url` command), passed to `/usr/bin/open` as a single argument, never through a shell. AI answers are rendered from escaped Markdown, with no raw HTML |
+| T18 | Information disclosure | The assistant's history grows past the model's window and it fills gaps by inventing | Conversation trimmed to a fixed budget (oldest first), tool results capped, repeated tool calls reuse the first result, earlier tool calls remembered as one-line notes; the prompt tells the model to call tools again instead of guessing |
 | T13 | Account risk | WhatsApp restricts the number | Clear warning at pairing and before enabling auto-reply; conservative defaults |
 
 ## Residual risks
