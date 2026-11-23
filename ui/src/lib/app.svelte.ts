@@ -122,6 +122,10 @@ export const app = $state({
   info: null as Message | null,
   /** Bumped when the saved stickers change, so the picker reloads them. */
   stickersVersion: 0,
+  /** Older history being fetched from the phone: chats done of total. */
+  backfill: null as null | { done: number; total: number },
+  /** Waiting for older messages of the open chat from the phone. */
+  fetchingOlder: false,
   /** A mentioned person's card: name, phone, actions. */
   person: null as null | { p: Person; x: number; y: number },
   notes: [] as Note[],
@@ -294,6 +298,47 @@ async function refreshMessage(jid: string, id: string) {
   void refreshPinned(jid);
 }
 
+/** At the top of a chat with nothing older stored: ask the phone. The
+ *  messages arrive as a history chunk, which reloads the page below. */
+export async function fetchOlderFromPhone() {
+  const jid = app.selected;
+  if (!jid || app.fetchingOlder || jid === AI || jid === NOTES) return;
+  app.fetchingOlder = true;
+  try {
+    const asked = await api.requestOlder(jid);
+    if (!asked) {
+      app.fetchingOlder = false;
+      return;
+    }
+  } catch {
+    app.fetchingOlder = false;
+    return;
+  }
+  setTimeout(() => {
+    if (app.selected === jid) app.fetchingOlder = false;
+  }, 15000);
+}
+
+async function reloadOlderAfterSync() {
+  const jid = app.selected;
+  if (!jid || !app.fetchingOlder || app.messages.length === 0) return;
+  const page = await api.messages(jid, app.messages[0].ts);
+  if (app.selected !== jid || page.length === 0) return;
+  const known = new Set(app.messages.map((m) => m.id));
+  app.messages = [...page.filter((m) => !known.has(m.id)), ...app.messages];
+  app.hasOlder = page.length === PAGE;
+  app.fetchingOlder = false;
+}
+
+let lastRefresh = 0;
+/** The window came back: reconnect if needed so the phone's read receipts
+ *  arrive now, then reload the list. */
+function refreshOnReturn() {
+  if (Date.now() - lastRefresh < 4000) return;
+  lastRefresh = Date.now();
+  void api.refreshNow().catch(() => {});
+}
+
 export async function loadOlder() {
   const jid = app.selected;
   if (!jid || app.loadingOlder || !app.hasOlder || app.messages.length === 0) return;
@@ -446,6 +491,14 @@ export async function init() {
   await on<null>("chats-changed", () => {
     refreshChats();
     void refreshLists();
+    void reloadOlderAfterSync();
+  });
+  await on<{ done: number; total: number } | null>("history-backfill", (p) => {
+    app.backfill = p && p.total > 0 && p.done < p.total ? p : null;
+  });
+  window.addEventListener("focus", refreshOnReturn);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") refreshOnReturn();
   });
   app.status = await api.status();
   app.chats = await api.chats();

@@ -125,6 +125,79 @@ pub async fn chat_mark_unread(
     Ok(())
 }
 
+/// Marks several chats read at once (the "Mark all as read" of a filter).
+#[tauri::command]
+pub async fn mark_chats_read(app: AppHandle, state: St<'_>, jids: Vec<String>) -> Result<()> {
+    if jids.len() > 2000 {
+        return Err(Error::Invalid("too many chats".into()));
+    }
+    for jid in &jids {
+        check_jid(jid)?;
+    }
+    for jid in &jids {
+        state.store.mark_read(jid)?;
+    }
+    changed(&app);
+    if let Ok(c) = wa(&state).await {
+        for jid in &jids {
+            synced("read state", c.set_read(jid, true).await);
+        }
+    }
+    Ok(())
+}
+
+/// Called when the window comes back to the front: reconnects if the
+/// connection dropped so receipts from the phone arrive right away.
+#[tauri::command]
+pub async fn refresh_now(app: AppHandle, state: St<'_>) -> Result<()> {
+    if let Ok(c) = wa(&state).await {
+        c.ensure_connected().await;
+    }
+    changed(&app);
+    Ok(())
+}
+
+/// Asks the phone for messages older than the oldest one stored here.
+/// Returns false when the chat has nothing to anchor on or is complete.
+#[tauri::command]
+pub async fn request_older(state: St<'_>, jid: String) -> Result<bool> {
+    check_jid(&jid)?;
+    if state.store.history_complete(&jid) {
+        return Ok(false);
+    }
+    wa(&state).await?.request_older(&jid, 50).await
+}
+
+/// Settings → Storage: fetch the whole history from the phone.
+#[tauri::command]
+pub fn get_full_history(state: St<'_>) -> bool {
+    state
+        .store
+        .get_json::<Option<bool>>(crate::session::KEY_FULL_HISTORY)
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+pub fn set_full_history(
+    app: AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> Result<()> {
+    state
+        .store
+        .set_json(crate::session::KEY_FULL_HISTORY, &Some(enabled))?;
+    if enabled {
+        crate::session::start_backfill(&app, state.inner());
+    }
+    Ok(())
+}
+
+/// Whether the background history fetch is running.
+#[tauri::command]
+pub fn history_backfill_state(state: St<'_>) -> bool {
+    state.backfilling.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[tauri::command]
 pub async fn chat_clear(app: AppHandle, state: St<'_>, jid: String) -> Result<()> {
     check_jid(&jid)?;

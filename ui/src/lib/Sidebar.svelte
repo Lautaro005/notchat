@@ -16,7 +16,7 @@
     selectChat,
     type Theme,
   } from "./app.svelte";
-  import { chatMenu, listMenu, newList } from "./chatMenu";
+  import { chatMenu, filterMenu, listMenu, newList } from "./chatMenu";
   import { stamp, t, tf, type Key } from "./i18n";
   import type { Chat } from "./api";
 
@@ -151,7 +151,13 @@
     {#if !app.archived}
       <div class="filters" role="tablist" aria-label={t("filters")}>
         {#each [["all", t("filter.all")], ["unread", t("filter.unread")], ["groups", t("filter.groups")]] as [id, label] (id)}
-          <button role="tab" class="chip" aria-selected={app.filter === id} onclick={() => (app.filter = id)}>
+          <button
+            role="tab"
+            class="chip"
+            aria-selected={app.filter === id}
+            onclick={() => (app.filter = id)}
+            oncontextmenu={(e) => openMenu(e, filterMenu(id))}
+          >
             {label}
             {#if id === "unread" && unreadCount > 0}<span class="count num">{unreadCount}</span>{/if}
           </button>
@@ -162,7 +168,7 @@
             class="chip"
             aria-selected={app.filter === `list:${list.id}`}
             onclick={() => (app.filter = `list:${list.id}`)}
-            oncontextmenu={(e) => openMenu(e, listMenu(list.id))}
+            oncontextmenu={(e) => openMenu(e, [...filterMenu(`list:${list.id}`), { separator: true }, ...listMenu(list.id)])}
           >
             {list.name}
           </button>
@@ -277,6 +283,15 @@
     {#if app.auto.enabled}
       <span class="auto"><Icon name="spark" size={14} />{t("side.autoOn")}</span>
       <button class="btn quiet pause" onclick={() => saveAutoReply({ enabled: false })}>{t("side.pause")}</button>
+    {:else if app.backfill && app.status.link === "connected"}
+      <span
+        class="conn sync"
+        role="status"
+        title={t("side.syncHint")}
+        style:--p="{Math.round((app.backfill.done / app.backfill.total) * 100)}%"
+      >
+        <span class="ring" aria-hidden="true"></span>{tf("side.syncing", { n: Math.round((app.backfill.done / app.backfill.total) * 100) })}
+      </span>
     {:else}
       <span class="conn" class:on={app.status.link === "connected"}>
         <span class="dot"></span>{app.status.link === "connected" ? "WhatsApp" : t("status.starting")}
@@ -697,6 +712,22 @@
   }
   .conn.on .dot {
     background: var(--accent);
+  }
+  /* Background history fetch: a small progress ring where the status dot is. */
+  .ring {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: conic-gradient(var(--accent) var(--p), var(--line) 0);
+    mask: radial-gradient(circle, transparent 3.5px, #000 4px);
+    -webkit-mask: radial-gradient(circle, transparent 3.5px, #000 4px);
+    transition: background 400ms var(--ease);
+  }
+  .conn.sync {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .auto {
     display: flex;

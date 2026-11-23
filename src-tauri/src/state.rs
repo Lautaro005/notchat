@@ -49,6 +49,8 @@ pub struct AppState {
     pub avatar_slots: tokio::sync::Semaphore,
     /// A downloaded, verified update waiting to be installed.
     pub update_busy: std::sync::atomic::AtomicBool,
+    /// True while older history is being fetched from the phone.
+    pub backfilling: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {

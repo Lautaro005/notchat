@@ -133,6 +133,11 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       return m(String(Math.random()), args.jid as string, 0, args.text as string, true);
     case "list_lists":
       return lists;
+    case "mark_chats_read":
+      for (const c of chats) if ((args.jids as string[]).includes(c.jid)) Object.assign(c, { unread: 0, marked_unread: false });
+      return null;
+    case "get_full_history":
+      return true;
     case "avatar": {
       const i = chats.findIndex((c) => c.jid === args.jid);
       return i >= 0 && i % 3 !== 2 ? photo(i * 47 + 20) : null;

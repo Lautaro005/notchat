@@ -1,6 +1,6 @@
 import { api, type Chat } from "./api";
 import { app, askText, confirmAction, isMuted, isUnread, selectChat, toast, type MenuItem } from "./app.svelte";
-import { t } from "./i18n";
+import { t, tf } from "./i18n";
 
 /** Runs a chat action and tells the user when it fails. */
 async function attempt(fn: () => Promise<unknown>, done?: string) {
@@ -21,6 +21,29 @@ export async function newList(addJid?: string) {
     if (addJid) await api.setListMember(id, addJid, true);
     if (!addJid) app.filter = `list:${id}`;
   });
+}
+
+/** Right-click on a filter (All, Unread, Groups or a list): mark every
+ *  unread chat it shows as read. */
+export function filterMenu(filter: string): MenuItem[] {
+  const members = filter.startsWith("list:")
+    ? new Set(app.lists.find((l) => `list:${l.id}` === filter)?.jids ?? [])
+    : null;
+  const targets = app.chats.filter(
+    (c) =>
+      !c.archived &&
+      isUnread(c) &&
+      (filter === "groups" ? c.is_group : true) &&
+      (members ? members.has(c.jid) : true),
+  );
+  return [
+    {
+      label: targets.length ? tf("menu.markAllRead", { n: targets.length }) : t("menu.allRead"),
+      icon: "check",
+      disabled: targets.length === 0,
+      action: () => attempt(() => api.markChatsRead(targets.map((c) => c.jid))),
+    },
+  ];
 }
 
 export function listMenu(id: number): MenuItem[] {

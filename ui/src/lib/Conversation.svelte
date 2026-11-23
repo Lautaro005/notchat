@@ -8,7 +8,7 @@
   import ReactBar from "./ReactBar.svelte";
   import VoicePlayer from "./VoicePlayer.svelte";
   import { api } from "./api";
-  import { app, chatTitle, isMuted, loadOlder, openMenu } from "./app.svelte";
+  import { app, chatTitle, fetchOlderFromPhone, isMuted, loadOlder, openMenu } from "./app.svelte";
   import { chatMenu } from "./chatMenu";
   import {
     copyText,
@@ -64,7 +64,9 @@
   }
 
   function onScroll() {
-    if (scroller && scroller.scrollTop < 120 && app.hasOlder && !app.loadingOlder) void older();
+    if (!scroller || scroller.scrollTop >= 120 || app.loadingOlder) return;
+    if (app.hasOlder) void older();
+    else if (app.messages.length > 0) void fetchOlderFromPhone();
   }
 
   function nameOf(jid: string, fallback = ""): string {
@@ -297,7 +299,9 @@
       {/if}
 
       <div class="log scroll" class:selecting={app.selecting} bind:this={scroller} onscroll={onScroll}>
-        {#if app.hasOlder}
+        {#if app.fetchingOlder}
+          <p class="older phone" role="status"><span class="spin" aria-hidden="true"></span>{t("chat.olderPhone")}</p>
+        {:else if app.hasOlder}
           <button class="btn quiet older" onclick={older} disabled={app.loadingOlder}>{t("chat.older")}</button>
         {/if}
         {#each app.messages as m, i (m.id)}
@@ -653,6 +657,31 @@
   }
   .log > :first-child {
     margin-top: auto;
+  }
+  .older.phone {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  .spin {
+    width: 12px;
+    height: 12px;
+    border: 1.5px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 800ms linear infinite;
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spin {
+      animation: none;
+    }
   }
   .older {
     align-self: center;

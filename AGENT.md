@@ -110,7 +110,11 @@ npm --prefix ui run check
 - Notas: tabla `notes`; sus archivos van a `notes/` (aparte de `media/`, así «Liberar espacio» nunca los borra).
 - Nombres: la vista temporal `people` busca un contacto por número o por LID (tabla `lid_map`, que se llena con `sender_alt`/`recipient_alt`, el historial, los contactos y los participantes de grupos). Orden: nombre de la agenda → `~` + nombre de WhatsApp → `+número`. Se resuelven al leer (`resolve_people` en `store.rs`), nunca se guardan ya resueltos.
 - Menciones: `messages.mentions` guarda los JID mencionados; al leer se devuelven como `Person` para que la UI muestre `@Nombre`.
-- Leídos en el teléfono: los recibos `read-self` bajan el contador con `Store::mark_read_up_to`.
+- Leídos en el teléfono: en chats individuales el recibo `read-self` trae **nuestro** JID, no el del chat; el chat se busca por id de mensaje (`Store::mark_read_elsewhere`). Los ids que llegan antes que el mensaje quedan en memoria para que entre ya leído.
+- `sender_alt` en mensajes propios es **nuestra** dirección alternativa: nunca emparejarla con el chat (bug de 0.1.4; `repair_own_mappings` y `move_strays` lo limpian al conectar).
+- Al conectar, `learn_known_addresses` completa `lid_map` con `client.get_lid_pn_entry`.
+- Historial: los vínculos nuevos piden el historial completo (`DevicePropsOverride`); para el resto, `WaClient::backfill_history` pide al teléfono (`fetch_message_history`) de a 100 mensajes por chat, con pausas; `history_done` marca los chats completos. Los chunks `ON_DEMAND` no tocan el estado del chat. Ajuste `full_history` (prendido por defecto).
+- Referencias de otros clientes: `docs/references.md`.
 - Puertos de los proveedores locales: ajuste `ai_ports` (`ProviderPorts`), siempre en 127.0.0.1 y ≥ 1024.
 - Vista previa del notch en el navegador: `http://127.0.0.1:1420/?view=notch#notch`.
 - Actualizaciones: `crates/core/src/update.rs` (verifica `SHA256SUMS` del release) y `src-tauri/src/updater.rs` (reemplaza el `.app` al salir).

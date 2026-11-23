@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import Avatar from "./Avatar.svelte";
   import Segmented from "./Segmented.svelte";
+  import Switch from "./Switch.svelte";
   import { api, type StorageInfo } from "./api";
   import { app, chatTitle, confirmAction, toast } from "./app.svelte";
   import { bytes, t, tf } from "./i18n";
@@ -10,10 +11,25 @@
   let busy = $state(false);
   let older = $state<"30" | "90" | "365">("90");
 
+  let fullHistory = $state(true);
+
   async function refresh() {
     info = await api.storage();
   }
-  onMount(refresh);
+  onMount(() => {
+    void refresh();
+    void api.getFullHistory().then((v) => (fullHistory = v), () => {});
+  });
+
+  async function setFullHistory(v: boolean) {
+    fullHistory = v;
+    try {
+      await api.setFullHistory(v);
+    } catch {
+      fullHistory = !v;
+      toast(t("toast.failed"));
+    }
+  }
 
   const total = $derived(info ? info.database + info.media + info.avatars + info.session : 0);
   const parts = $derived(
@@ -90,6 +106,13 @@
       </li>
     {/each}
   </ul>
+</section>
+
+<section>
+  <div class="hist">
+    <span><strong>{t("stor.fullHistory")}</strong><small>{t("stor.fullHistoryHint")}</small></span>
+    <Switch checked={fullHistory} label={t("stor.fullHistory")} onchange={setFullHistory} />
+  </div>
 </section>
 
 <section>
@@ -256,5 +279,23 @@
   .cmeta small {
     color: var(--text-3);
     font-size: 11.5px;
+  }
+  .hist {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+  .hist span {
+    display: grid;
+    gap: 2px;
+  }
+  .hist strong {
+    font-size: 13px;
+    font-weight: 600;
+  }
+  .hist small {
+    font-size: 12px;
+    color: var(--text-3);
   }
 </style>

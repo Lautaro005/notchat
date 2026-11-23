@@ -66,6 +66,7 @@ fn init_state(app: &tauri::App) -> Result<AppState, Box<dyn std::error::Error>> 
         avatars: notchat_core::media::AvatarCache::new(&data_dir),
         avatar_slots: tokio::sync::Semaphore::new(4),
         update_busy: Default::default(),
+        backfilling: Default::default(),
         data_dir,
     })
 }
@@ -154,6 +155,12 @@ pub fn run() {
             chats::chat_pin,
             chats::chat_mute,
             chats::chat_mark_unread,
+            chats::mark_chats_read,
+            chats::refresh_now,
+            chats::request_older,
+            chats::history_backfill_state,
+            chats::get_full_history,
+            chats::set_full_history,
             chats::chat_clear,
             chats::chat_delete,
             chats::chat_export,

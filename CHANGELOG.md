@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5 — 2026-11-23
+
+Read state, names and history that match your phone.
+
+- **Messages you send from the phone stay in their chat.** 0.1.4 could file messages to (and from) some contacts under your own chat. Fixed, the wrong links are repaired at launch, and messages from those contacts are moved back to their chats.
+- **Read on the phone means read here, also after a restart.** WhatsApp names your own number in read receipts for one-to-one chats; Notchat now finds the right chat from the message itself, and messages read before they reached the Mac arrive already read. Coming back to the window reconnects right away if the connection had dropped (sleep, network change).
+- **More consistent names.** At launch Notchat looks up the phone number of every private group id it has seen (and the id of every unnamed chat) in WhatsApp's own address book, so saved names show everywhere.
+- **Whole history.** In the background Notchat asks your phone for each chat's older messages, newest chats first, a little at a time. A small ring in the sidebar shows progress; turn it off in Settings → Storage. Scrolling to the top of a chat also asks the phone for older messages. New links request the full history from the start.
+- **Mark all as read.** Right-click All, Unread, Groups or one of your lists.
+- docs/references.md lists the open-source projects used as reference.
+
 ## 0.1.4 — 2026-11-19
 
 Names you recognise, read state that follows your phone, and a smarter assistant.

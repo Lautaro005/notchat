@@ -190,6 +190,18 @@ pub struct AiMessage {
 
 pub struct Store {
     conn: Mutex<Connection>,
+    /// Ids read on another device before the message itself arrived here:
+    /// they must not count as unread when they do.
+    read_elsewhere: Mutex<std::collections::HashSet<String>>,
+}
+
+/// Oldest stored message of a chat: the anchor for asking the phone for
+/// older history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Oldest {
+    pub id: String,
+    pub from_me: bool,
+    pub ts: i64,
 }
 
 /// Columns read by [`row_to_message`], in order.
@@ -238,6 +250,9 @@ CREATE TABLE IF NOT EXISTS lid_map (
   pn TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_lid_map_pn ON lid_map(pn);
+CREATE TABLE IF NOT EXISTS history_done (
+  jid TEXT PRIMARY KEY
+);
 CREATE TABLE IF NOT EXISTS lists (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL
@@ -336,6 +351,7 @@ impl Store {
         )?;
         Ok(Self {
             conn: Mutex::new(conn),
+            read_elsewhere: Mutex::new(std::collections::HashSet::new()),
         })
     }
 
@@ -416,6 +432,168 @@ impl Store {
         Ok(())
     }
 
+    /// Undoes wrong LID mappings that point a contact at our own number
+    /// (0.1.4 learned them from our own messages) and drops copies of
+    /// messages that landed in our own chat because of them.
+    pub fn repair_own_mappings(&self, own: &[String]) -> Result<usize> {
+        let own: Vec<String> = own.iter().map(|j| bare_jid(j)).collect();
+        let Some(own_pn) = own.iter().find(|j| j.ends_with("@s.whatsapp.net")) else {
+            return Ok(0);
+        };
+        let own_lid = own
+            .iter()
+            .find(|j| j.ends_with("@lid"))
+            .cloned()
+            .unwrap_or_default();
+        let conn = self.lock();
+        let fixed = conn.execute(
+            "DELETE FROM lid_map WHERE pn = ?1 AND lid != ?2",
+            params![own_pn, own_lid],
+        )?;
+        conn.execute(
+            "DELETE FROM messages WHERE chat_jid = ?1
+               AND id IN (SELECT id FROM messages WHERE chat_jid != ?1)",
+            [own_pn],
+        )?;
+        if fixed > 0 {
+            refresh_preview(&conn, own_pn)?;
+        }
+        Ok(fixed)
+    }
+
+    /// Moves messages from other people out of our own chat (where wrong
+    /// mappings put them) into the chat of whoever sent them. Returns how
+    /// many moved.
+    pub fn move_strays(&self, own: &[String]) -> Result<usize> {
+        let own: Vec<String> = own.iter().map(|j| bare_jid(j)).collect();
+        let Some(own_pn) = own.iter().find(|j| j.ends_with("@s.whatsapp.net")).cloned() else {
+            return Ok(0);
+        };
+        let mut conn = self.lock();
+        let tx = conn.transaction()?;
+        let strays: Vec<(String, String, i64)> = {
+            let mut stmt = tx.prepare(
+                "SELECT id, sender_jid, ts FROM messages
+                 WHERE chat_jid = ?1 AND from_me = 0 AND sender_jid != ''",
+            )?;
+            let rows = stmt.query_map([&own_pn], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut targets: Vec<String> = Vec::new();
+        let mut moved = 0;
+        for (id, sender, ts) in strays {
+            let sender = bare_jid(&sender);
+            if own.contains(&sender) {
+                continue;
+            }
+            let target = if sender.ends_with("@lid") {
+                tx.query_row("SELECT pn FROM lid_map WHERE lid = ?1", [&sender], |r| {
+                    r.get::<_, String>(0)
+                })
+                .optional()?
+                .unwrap_or(sender)
+            } else {
+                sender
+            };
+            if target == own_pn {
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO chats (jid, is_group, last_ts) VALUES (?1, 0, ?2)
+                 ON CONFLICT(jid) DO UPDATE SET last_ts = MAX(chats.last_ts, excluded.last_ts)",
+                params![target, ts],
+            )?;
+            tx.execute(
+                "UPDATE OR IGNORE messages SET chat_jid = ?2 WHERE chat_jid = ?1 AND id = ?3",
+                params![own_pn, target, id],
+            )?;
+            tx.execute(
+                "UPDATE OR IGNORE reactions SET chat_jid = ?2 WHERE chat_jid = ?1 AND msg_id = ?3",
+                params![own_pn, target, id],
+            )?;
+            tx.execute(
+                "DELETE FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                params![own_pn, id],
+            )?;
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+            moved += 1;
+        }
+        targets.push(own_pn);
+        for t in &targets {
+            refresh_preview(&tx, t)?;
+        }
+        tx.commit()?;
+        Ok(moved)
+    }
+
+    /// LIDs seen in contacts, chats or group messages with no phone number yet.
+    pub fn unmapped_lids(&self, limit: u32) -> Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT jid FROM (
+               SELECT jid FROM contacts WHERE jid LIKE '%@lid'
+               UNION SELECT jid FROM chats WHERE jid LIKE '%@lid'
+               UNION SELECT DISTINCT sender_jid FROM messages WHERE sender_jid LIKE '%@lid'
+             ) WHERE jid NOT IN (SELECT lid FROM lid_map) LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// One-to-one chats (by phone number) with no contact-book name: their
+    /// contact may be stored under a LID we don't know yet.
+    pub fn unnamed_pn_chats(&self, limit: u32) -> Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare(
+            "SELECT c.jid FROM chats c WHERE c.is_group = 0 AND c.jid LIKE '%@s.whatsapp.net'
+               AND NOT EXISTS (SELECT 1 FROM people p WHERE p.jid = c.jid AND p.name != '')
+               AND c.jid NOT IN (SELECT pn FROM lid_map)
+             ORDER BY c.last_ts DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| r.get(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// True once the phone has sent all the older history it has for a chat.
+    pub fn history_complete(&self, chat_jid: &str) -> bool {
+        self.lock()
+            .query_row(
+                "SELECT 1 FROM history_done WHERE jid = ?1",
+                [chat_jid],
+                |_| Ok(()),
+            )
+            .is_ok()
+    }
+
+    pub fn set_history_complete(&self, chat_jid: &str) -> Result<()> {
+        self.lock().execute(
+            "INSERT OR IGNORE INTO history_done (jid) VALUES (?1)",
+            [chat_jid],
+        )?;
+        Ok(())
+    }
+
+    /// The oldest stored message of a chat.
+    pub fn oldest_message(&self, chat_jid: &str) -> Result<Option<Oldest>> {
+        Ok(self
+            .lock()
+            .query_row(
+                "SELECT id, from_me, ts FROM messages WHERE chat_jid = ?1
+                 ORDER BY ts ASC, rowid ASC LIMIT 1",
+                [chat_jid],
+                |r| {
+                    Ok(Oldest {
+                        id: r.get(0)?,
+                        from_me: r.get(1)?,
+                        ts: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// The phone-number JID for a LID, when known; other JIDs unchanged.
     pub fn canonical_jid(&self, jid: &str) -> String {
         if !jid.ends_with("@lid") {
@@ -480,6 +658,59 @@ impl Store {
         Ok(changed > 0)
     }
 
+    /// Applies a "read on another device" receipt. `chat` is `None` when the
+    /// receipt does not say which chat (one-to-one chats: WhatsApp names our
+    /// own address), so the chat is found from the message ids. Returns the
+    /// chats whose unread count changed.
+    pub fn mark_read_elsewhere(&self, chat: Option<&str>, ids: &[String]) -> Result<Vec<String>> {
+        let chats: Vec<String> = match chat {
+            Some(c) => vec![c.to_string()],
+            None => {
+                let conn = self.lock();
+                let mut found = Vec::new();
+                for id in ids {
+                    let jid: Option<String> = conn
+                        .query_row(
+                            "SELECT chat_jid FROM messages WHERE id = ?1 AND from_me = 0 LIMIT 1",
+                            [id],
+                            |r| r.get(0),
+                        )
+                        .optional()?;
+                    if let Some(j) = jid.filter(|j| !found.contains(j)) {
+                        found.push(j);
+                    }
+                }
+                found
+            }
+        };
+        if chats.is_empty() {
+            // Not here yet: remember the ids so they arrive already read.
+            let mut pending = self
+                .read_elsewhere
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if pending.len() > 5000 {
+                pending.clear();
+            }
+            pending.extend(ids.iter().cloned());
+            return Ok(Vec::new());
+        }
+        let mut changed = Vec::new();
+        for c in chats {
+            if self.mark_read_up_to(&c, ids)? {
+                changed.push(c);
+            }
+        }
+        Ok(changed)
+    }
+
+    fn was_read_elsewhere(&self, id: &str) -> bool {
+        self.read_elsewhere
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id)
+    }
+
     pub fn mark_read(&self, jid: &str) -> Result<()> {
         self.lock().execute(
             "UPDATE chats SET unread = 0, marked_unread = 0 WHERE jid = ?1",
@@ -523,6 +754,7 @@ impl Store {
         raw: Option<&[u8]>,
         count_unread: bool,
     ) -> Result<bool> {
+        let count_unread = count_unread && !(m.from_me || self.was_read_elsewhere(&m.id));
         let mut conn = self.lock();
         let tx = conn.transaction()?;
         let inserted = tx.execute(
@@ -1208,7 +1440,7 @@ impl Store {
     pub fn clear_whatsapp_data(&self) -> Result<()> {
         self.lock().execute_batch(
             "DELETE FROM messages; DELETE FROM chats; DELETE FROM list_members;
-             DELETE FROM contacts; DELETE FROM lid_map; DELETE FROM reactions; DELETE FROM stickers;",
+             DELETE FROM contacts; DELETE FROM lid_map; DELETE FROM history_done; DELETE FROM reactions; DELETE FROM stickers;",
         )?;
         Ok(())
     }
@@ -1722,6 +1954,68 @@ mod tests {
         );
         assert!(s.mark_read_up_to("a", &["unknown".into()]).unwrap());
         assert_eq!(s.get_chat("a").unwrap().unwrap().unread, 0);
+    }
+
+    #[test]
+    fn wrong_own_mappings_are_repaired_and_strays_moved_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        let me = "5491100000000@s.whatsapp.net";
+        let own = vec![me.to_string(), "111@lid".to_string()];
+        s.map_lid("111@lid", me).unwrap();
+        s.map_lid("555@lid", me).unwrap(); // the 0.1.4 bug
+                                           // A contact's incoming message that landed in our own chat.
+        let mut stray = msg(me, "x1", 10, "hola", false);
+        stray.sender_jid = "555@lid".into();
+        s.insert_message(&stray, false).unwrap();
+        // A real note to self stays.
+        s.insert_message(&msg(me, "n1", 11, "nota", true), false)
+            .unwrap();
+        assert_eq!(s.repair_own_mappings(&own).unwrap(), 1);
+        assert_eq!(s.canonical_jid("555@lid"), "555@lid");
+        assert_eq!(s.canonical_jid("111@lid"), me);
+        s.map_lid("555@lid", "5491155555555@s.whatsapp.net")
+            .unwrap();
+        assert_eq!(s.move_strays(&own).unwrap(), 1);
+        let home = s
+            .list_messages("5491155555555@s.whatsapp.net", None, 10)
+            .unwrap();
+        assert_eq!(home.len(), 1);
+        assert_eq!(home[0].id, "x1");
+        let mine = s.list_messages(me, None, 10).unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].id, "n1");
+        assert_eq!(s.get_chat(me).unwrap().unwrap().last_preview, "nota");
+    }
+
+    #[test]
+    fn read_receipts_naming_us_find_the_chat_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        s.insert_message(&msg("ana", "a1", 10, "x", false), false)
+            .unwrap();
+        s.insert_message(&msg("ana", "a2", 20, "y", false), false)
+            .unwrap();
+        assert_eq!(
+            s.mark_read_elsewhere(None, &["a2".into()]).unwrap(),
+            ["ana".to_string()]
+        );
+        assert_eq!(s.get_chat("ana").unwrap().unwrap().unread, 0);
+        // Read before it arrived here: it arrives already read.
+        assert!(s
+            .mark_read_elsewhere(None, &["b1".into()])
+            .unwrap()
+            .is_empty());
+        s.insert_message(&msg("beto", "b1", 30, "z", false), false)
+            .unwrap();
+        assert_eq!(s.get_chat("beto").unwrap().unwrap().unread, 0);
+        s.insert_message(&msg("beto", "b2", 40, "w", false), false)
+            .unwrap();
+        assert_eq!(s.get_chat("beto").unwrap().unwrap().unread, 1);
+        assert_eq!(s.oldest_message("beto").unwrap().unwrap().id, "b1");
+        assert!(!s.history_complete("beto"));
+        s.set_history_complete("beto").unwrap();
+        assert!(s.history_complete("beto"));
     }
 
     #[test]

@@ -386,8 +386,21 @@ impl WaSession {
         let tx_ev = events;
         let store_ev = Arc::clone(&store);
 
+        // Ask the phone for the whole history when linking. It only applies
+        // to new links; older ones fill in on demand (`backfill_history`).
+        let props = whatsapp_rust::wacore::store::device::DevicePropsOverride::new()
+            .with_require_full_sync(true)
+            .with_history_sync_config(wa::device_props::HistorySyncConfig {
+                full_sync_days_limit: Some(3650),
+                full_sync_size_mb_limit: Some(4096),
+                storage_quota_mb: Some(16384),
+                on_demand_ready: Some(true),
+                complete_on_demand_ready: Some(true),
+                ..whatsapp_rust::wacore::store::device::default_history_sync_config()
+            });
         let mut builder = Bot::builder()
             .with_backend(backend)
+            .with_device_props(props)
             .on_qr_code(move |code, timeout| {
                 let tx = tx_qr.clone();
                 async move {
@@ -1010,6 +1023,93 @@ impl WaClient {
             .map_err(|e| Error::Wa(e.to_string()))
     }
 
+    /// Reconnects right away if the connection dropped (sleep, network
+    /// change), so receipts and messages waiting on the server arrive now.
+    pub async fn ensure_connected(&self) {
+        if self.client.is_logged_in() && !self.client.is_connected() {
+            self.client.reconnect_immediately().await;
+        }
+    }
+
+    /// Asks the phone for up to `count` messages older than the oldest one
+    /// stored for this chat. They arrive later as an on-demand history
+    /// chunk. Returns false when there is nothing to anchor the request on.
+    pub async fn request_older(&self, chat_jid: &str, count: i32) -> Result<bool> {
+        self.ready()?;
+        let Some(oldest) = self.store.oldest_message(chat_jid)? else {
+            return Ok(false);
+        };
+        let jid = parse_jid(chat_jid)?;
+        self.client
+            .fetch_message_history(
+                &jid,
+                &oldest.id,
+                oldest.from_me,
+                oldest.ts.saturating_mul(1000),
+                count.clamp(1, 100),
+            )
+            .await
+            .map_err(|e| Error::Wa(e.to_string()))?;
+        Ok(true)
+    }
+
+    /// Fetches older history for every chat, newest chats first, one request
+    /// at a time with pauses so the phone is never flooded. A chat is done
+    /// when the phone stops sending anything older. Reports `(done, total)`.
+    pub async fn backfill_history(
+        &self,
+        progress: &(dyn Fn(usize, usize) + Send + Sync),
+    ) -> Result<()> {
+        const ROUNDS: usize = 40;
+        const WAIT: Duration = Duration::from_secs(12);
+        let mut pending: Vec<String> = self
+            .store
+            .list_chats()?
+            .into_iter()
+            .map(|c| c.jid)
+            .filter(|j| !self.store.history_complete(j))
+            .collect();
+        let total = pending.len();
+        progress(0, total);
+        for _ in 0..ROUNDS {
+            if pending.is_empty() {
+                break;
+            }
+            let mut again = Vec::new();
+            let mut done_now = 0;
+            let remaining = pending.len();
+            for jid in pending {
+                let before = self.store.oldest_message(&jid)?.map(|o| o.ts);
+                let mut grew = false;
+                if self.request_older(&jid, 100).await? {
+                    let start = std::time::Instant::now();
+                    while start.elapsed() < WAIT {
+                        tokio::time::sleep(Duration::from_millis(600)).await;
+                        let now = self.store.oldest_message(&jid)?.map(|o| o.ts);
+                        if now < before {
+                            grew = true;
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(1500)).await;
+                }
+                if grew {
+                    again.push(jid);
+                } else {
+                    self.store.set_history_complete(&jid)?;
+                    done_now += 1;
+                }
+                progress(total - remaining + done_now, total);
+            }
+            pending = again;
+        }
+        for jid in &pending {
+            self.store.set_history_complete(jid)?;
+        }
+        progress(total, total);
+        Ok(())
+    }
+
     /// Tells the contact we are typing (or stopped).
     pub async fn set_typing(&self, chat_jid: &str, typing: bool) -> Result<()> {
         self.ready()?;
@@ -1038,10 +1138,21 @@ async fn handle_event(
     match event {
         Event::Connected(_) => {
             let _ = tx.send(WaEvent::Connected);
+            match store.repair_own_mappings(&own_jids(client)) {
+                Ok(n) if n > 0 => {
+                    log::info!("repaired {n} wrong address mappings");
+                    let _ = tx.send(WaEvent::ChatsChanged);
+                }
+                Ok(_) => {}
+                Err(e) => log::warn!("mapping repair failed: {e}"),
+            }
             let client = Arc::clone(client);
             let store = Arc::clone(store);
             let tx = tx.clone();
-            tokio::spawn(async move { sync_groups(&client, &store, &tx).await });
+            tokio::spawn(async move {
+                sync_groups(&client, &store, &tx).await;
+                learn_known_addresses(&client, &store, &tx).await;
+            });
         }
         Event::Disconnected(_) => {
             let _ = tx.send(WaEvent::Disconnected);
@@ -1069,15 +1180,23 @@ async fn handle_event(
         Event::Receipt(receipt)
             if receipt.r#type == whatsapp_rust::wacore::types::presence::ReceiptType::ReadSelf =>
         {
-            // Read on the phone (or another linked device).
+            // Read on the phone (or another linked device). In one-to-one
+            // chats the receipt names our own address, not the chat: the
+            // chat is found from the message ids instead.
             let chat = store.canonical_jid(&receipt.source.chat.to_string());
+            let is_me = own_jids(client)
+                .iter()
+                .any(|j| user_part(j) == user_part(&chat));
             let ids: Vec<String> = receipt
                 .message_ids
                 .iter()
                 .map(ToString::to_string)
                 .collect();
-            if let Ok(true) = store.mark_read_up_to(&chat, &ids) {
-                let _ = tx.send(WaEvent::ChatUpdated { jid: chat });
+            let hint = (!is_me).then_some(chat.as_str());
+            if let Ok(changed) = store.mark_read_elsewhere(hint, &ids) {
+                for jid in changed {
+                    let _ = tx.send(WaEvent::ChatUpdated { jid });
+                }
             }
         }
         Event::ContactUpdate(update) => {
@@ -1274,6 +1393,7 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
             .conversation_timestamp
             .or(conv.last_msg_timestamp)
             .map_or(0, |t| i64::try_from(t).unwrap_or(0));
+        let on_demand = history.sync_type == wa::history_sync::HistorySyncType::ON_DEMAND;
         let chat = HistoryChat {
             jid: jid.clone(),
             name: conv
@@ -1291,9 +1411,12 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
                 .map_or(0, |t| mute_seconds(i64::try_from(t).unwrap_or(-1))),
             marked_unread: conv.marked_as_unread == Some(true),
         };
-        if let Err(e) = store.apply_history_chat(&chat) {
-            log::warn!("failed to store chat: {e}");
-            continue;
+        // Older history asked for on demand carries no chat state: keep ours.
+        if !on_demand {
+            if let Err(e) = store.apply_history_chat(&chat) {
+                log::warn!("failed to store chat: {e}");
+                continue;
+            }
         }
         for item in &conv.messages {
             let Some(info) = item.message.as_option() else {
@@ -1368,12 +1491,15 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
 
 /// Learns LID ↔ phone-number pairs from a message's addressing.
 fn learn_addresses(src: &whatsapp_rust::wacore::types::message::MessageSource, store: &Store) {
+    // Our own messages carry *our* alternate address in `sender_alt`: pairing
+    // it with the chat would turn the contact into our own number.
+    let incoming_dm = !src.is_group && !src.is_from_me;
     let pairs = [
         (Some(&src.sender), src.sender_alt.as_ref()),
         (Some(&src.chat), src.recipient_alt.as_ref()),
         (
             Some(&src.chat),
-            src.sender_alt.as_ref().filter(|_| !src.is_group),
+            src.sender_alt.as_ref().filter(|_| incoming_dm),
         ),
     ];
     for (a, b) in pairs {
@@ -1384,6 +1510,36 @@ fn learn_addresses(src: &whatsapp_rust::wacore::types::message::MessageSource, s
         } else {
             store.map_lid(&b, &a)
         };
+    }
+}
+
+/// Asks the library's own address book for the phone numbers of LIDs we
+/// have seen, and the LIDs of unnamed phone-number chats, so names stay
+/// consistent wherever WhatsApp used the other address.
+async fn learn_known_addresses(
+    client: &Arc<Client>,
+    store: &Arc<Store>,
+    tx: &UnboundedSender<WaEvent>,
+) {
+    let mut learned = 0;
+    let lids = store.unmapped_lids(5000).unwrap_or_default();
+    let pns = store.unnamed_pn_chats(2000).unwrap_or_default();
+    for jid in lids.iter().chain(pns.iter()) {
+        let Ok(parsed) = jid.parse::<Jid>() else {
+            continue;
+        };
+        if let Ok(Some(entry)) = client.get_lid_pn_entry(&parsed).await {
+            let lid = format!("{}@lid", entry.lid);
+            let pn = format!("{}@s.whatsapp.net", entry.phone_number);
+            if store.map_lid(&lid, &pn).is_ok() {
+                learned += 1;
+            }
+        }
+    }
+    let moved = store.move_strays(&own_jids(client)).unwrap_or(0);
+    if learned > 0 || moved > 0 {
+        log::info!("learned {learned} address mappings, moved {moved} messages");
+        let _ = tx.send(WaEvent::ChatsChanged);
     }
 }
 
@@ -1638,6 +1794,42 @@ mod tests {
         assert_eq!(user_part("5491100:12@s.whatsapp.net"), "5491100");
         assert_eq!(user_part("5491100@s.whatsapp.net"), "5491100");
         assert_eq!(user_part("123@lid"), "123");
+    }
+
+    #[test]
+    fn own_messages_never_map_a_contact_to_us() {
+        use whatsapp_rust::wacore::types::message::MessageSource;
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::open(&dir.path().join("t.db"), &crate::keychain::generate_key()).unwrap();
+        // Sent from our phone to a contact addressed by LID: sender_alt is
+        // OUR phone number, not the contact's.
+        let mine = MessageSource {
+            chat: "555@lid".parse().unwrap(),
+            sender: "111@lid".parse().unwrap(),
+            sender_alt: Some("5491100000000@s.whatsapp.net".parse().unwrap()),
+            is_from_me: true,
+            ..Default::default()
+        };
+        learn_addresses(&mine, &store);
+        assert_eq!(store.canonical_jid("555@lid"), "555@lid");
+        assert_eq!(
+            store.canonical_jid("111@lid"),
+            "5491100000000@s.whatsapp.net",
+            "our own pair is still learned"
+        );
+        // From the contact: their own alternate address is theirs.
+        let theirs = MessageSource {
+            chat: "555@lid".parse().unwrap(),
+            sender: "555@lid".parse().unwrap(),
+            sender_alt: Some("5491155555555@s.whatsapp.net".parse().unwrap()),
+            ..Default::default()
+        };
+        learn_addresses(&theirs, &store);
+        assert_eq!(
+            store.canonical_jid("555@lid"),
+            "5491155555555@s.whatsapp.net"
+        );
     }
 
     #[test]
