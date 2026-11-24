@@ -61,7 +61,10 @@ and [docs/security/controls.md](docs/security/controls.md).
   elsewhere. The assistant asks before sending a message, and always asks when it
   read chats or web pages in that request.
 - **Hardened webview.** Strict Content Security Policy, no remote content,
-  minimal Tauri capabilities, every command input validated in Rust.
+  minimal Tauri capabilities, every command input validated in Rust. Files dragged
+  onto the window are only queued as attachments, never opened as a page.
+- **Poll votes.** Votes are decrypted with each poll's own secret, which never leaves
+  the encrypted database; votes that fail to decrypt are ignored.
 - **Outbound web guard.** Assistant web requests can reach only public addresses;
   private, loopback and link-local ranges are blocked, including after DNS
   resolution and redirects.

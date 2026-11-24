@@ -4,7 +4,7 @@
 use crate::error::{Error, Result};
 use crate::keychain::is_valid_key;
 use crate::media::{check_avatar_url, MAX_MEDIA_BYTES};
-use crate::store::{restrict_permissions, HistoryChat, Message, Store};
+use crate::store::{restrict_permissions, HistoryChat, Message, PollDef, Store};
 use diesel::RunQueryDsl;
 use std::path::Path;
 use std::sync::Arc;
@@ -89,8 +89,13 @@ pub struct GroupInfo {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct Participant {
     pub jid: String,
+    /// Contact-book name, or `~` + their WhatsApp name; empty when unknown.
     pub name: String,
+    /// `+` and digits; empty when WhatsApp only gave a private id.
+    pub phone: String,
     pub admin: bool,
+    /// True for this account.
+    pub me: bool,
 }
 
 /// Media kinds Notchat can send.
@@ -154,6 +159,8 @@ struct Described {
     forwarded: bool,
     /// JIDs mentioned with `@` in the text.
     mentions: Vec<String>,
+    /// A poll's options (`kind = "poll"`).
+    poll: Option<PollDef>,
 }
 
 impl Described {
@@ -172,6 +179,7 @@ impl Described {
         m.quote_kind = self.quote_kind;
         m.forwarded = self.forwarded;
         m.mention_jids = self.mentions;
+        m.poll_def = self.poll.map(|p| p.to_json()).unwrap_or_default();
         self.keys
     }
 }
@@ -206,6 +214,27 @@ fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
                 .as_option()
                 .and_then(|m| m.context_info.as_option())
         })
+        .or_else(|| poll_of(base).and_then(|m| m.context_info.as_option()))
+}
+
+/// The poll a message creates, whichever version of the field carries it.
+fn poll_of(base: &wa::Message) -> Option<&wa::message::PollCreationMessage> {
+    base.poll_creation_message
+        .as_option()
+        .or_else(|| base.poll_creation_message_v2.as_option())
+        .or_else(|| base.poll_creation_message_v3.as_option())
+        .or_else(|| base.poll_creation_message_v5.as_option())
+        .or_else(|| base.poll_creation_message_v6.as_option())
+}
+
+/// The secret a message's votes (or edits) are encrypted with.
+fn message_secret(message: &wa::Message) -> Option<Vec<u8>> {
+    let base = message.get_base_message();
+    [message, base]
+        .into_iter()
+        .filter_map(|m| m.message_context_info.as_option())
+        .find_map(|c| c.message_secret.clone())
+        .filter(|s| !s.is_empty())
 }
 
 /// Adds the quoted message and forward flag to a description.
@@ -245,6 +274,9 @@ fn describe(message: &wa::Message) -> Described {
         d.keys = None;
         d.file_name.clear();
         d.size = 0;
+    }
+    if let (Some(poll), Some(secret)) = (d.poll.as_mut(), message_secret(message)) {
+        poll.secret = hex::encode(secret);
     }
     d
 }
@@ -316,6 +348,26 @@ fn describe_body(message: &wa::Message) -> Described {
             keys: Some(m.encode_to_vec()),
             ..Default::default()
         };
+    }
+    if let Some(p) = poll_of(base) {
+        let options: Vec<String> = p
+            .options
+            .iter()
+            .filter_map(|o| o.option_name.clone())
+            .filter(|o| !o.is_empty())
+            .collect();
+        if !options.is_empty() {
+            return Described {
+                kind: "poll",
+                text: p.name.clone().unwrap_or_default(),
+                poll: Some(PollDef {
+                    options,
+                    selectable: p.selectable_options_count.unwrap_or(0),
+                    secret: String::new(),
+                }),
+                ..Default::default()
+            };
+        }
     }
     Described {
         kind: "other",
@@ -627,6 +679,46 @@ impl WaClient {
         )
     }
 
+    /// Votes in a poll with the chosen option names; none clears our vote.
+    pub async fn vote_poll(&self, chat_jid: &str, id: &str, options: &[String]) -> Result<()> {
+        let (def, from_me, sender) = self
+            .store
+            .poll_def(chat_jid, id)?
+            .ok_or_else(|| Error::Invalid("poll".into()))?;
+        if options.iter().any(|o| !def.options.contains(o))
+            || (def.selectable > 0 && options.len() > def.selectable as usize)
+        {
+            return Err(Error::Invalid("poll choice".into()));
+        }
+        let secret = hex::decode(&def.secret)
+            .ok()
+            .filter(|s| s.len() == 32)
+            .ok_or_else(|| Error::Invalid("this poll can only be answered on your phone".into()))?;
+        self.ready()?;
+        let jid = parse_jid(chat_jid)?;
+        let creator = if from_me {
+            // Groups address polls by our private id when WhatsApp knows it.
+            let own = if chat_jid.ends_with("@g.us") {
+                self.client.lid().or_else(|| self.client.pn())
+            } else {
+                self.client.pn()
+            };
+            own.map(|j| j.to_non_ad())
+                .ok_or_else(|| Error::Wa("not logged in".into()))?
+        } else if sender.is_empty() {
+            parse_jid(chat_jid)?
+        } else {
+            parse_jid(&sender)?
+        };
+        self.client
+            .polls()
+            .vote(jid, id, &creator, &secret, options)
+            .await
+            .map_err(|e| Error::Wa(e.to_string()))?;
+        self.store
+            .set_poll_vote(chat_jid, id, "me", options, chrono::Utc::now().timestamp())
+    }
+
     /// Edits one of our own text messages.
     pub async fn edit(&self, chat_jid: &str, id: &str, text: &str) -> Result<()> {
         let text = text.trim();
@@ -922,6 +1014,7 @@ impl WaClient {
             .get_metadata(&jid)
             .await
             .map_err(|e| Error::Wa(e.to_string()))?;
+        learn_participants(&meta.participants, &self.store);
         let me = own_jids(&self.client);
         let mut i_am_admin = false;
         let participants = meta
@@ -933,20 +1026,26 @@ impl WaClient {
                     .as_ref()
                     .map_or_else(|| p.jid.to_string(), ToString::to_string);
                 let admin = p.is_admin();
-                if me
+                let is_me = me
                     .iter()
-                    .any(|m| user_part(m) == user_part(&jid) || user_part(m) == p.jid.user)
-                {
+                    .any(|m| user_part(m) == user_part(&jid) || user_part(m) == p.jid.user);
+                if is_me {
                     i_am_admin = admin;
                 }
-                let name = self
-                    .store
-                    .get_chat(&jid)
-                    .ok()
-                    .flatten()
-                    .map(|c| c.name)
-                    .unwrap_or_default();
-                Participant { jid, name, admin }
+                let person = self.store.person(&jid, "");
+                // `person` falls back to the phone number: only keep real names.
+                let name = if person.name == person.phone {
+                    String::new()
+                } else {
+                    person.name
+                };
+                Participant {
+                    jid,
+                    name,
+                    phone: person.phone,
+                    admin,
+                    me: is_me,
+                }
             })
             .collect();
         Ok(GroupInfo {
@@ -1484,10 +1583,39 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
                 starred: info.starred == Some(true),
                 ..Default::default()
             };
+            let mut d = d;
+            if let (Some(poll), Some(secret)) = (d.poll.as_mut(), &info.message_secret) {
+                if poll.secret.is_empty() && !secret.is_empty() {
+                    poll.secret = hex::encode(secret);
+                }
+            }
+            let options = d.poll.clone();
             let keys = d.fill(&mut message);
             mark_own_quote(&mut message, me);
             if message.kind == "sticker" {
                 remember_sticker(store, keys.as_deref(), message.ts);
+            }
+            if let Some(def) = options {
+                for u in &info.poll_updates {
+                    let (Some(key), Some(vote)) =
+                        (u.poll_update_message_key.as_option(), u.vote.as_option())
+                    else {
+                        continue;
+                    };
+                    let who = if key.from_me == Some(true) {
+                        "me".to_string()
+                    } else if is_group {
+                        key.participant.clone().unwrap_or_default()
+                    } else {
+                        jid.clone()
+                    };
+                    if who.is_empty() {
+                        continue;
+                    }
+                    let ts = u.sender_timestamp_ms.unwrap_or(0) / 1000;
+                    let picked = def.names_for(&vote.selected_options);
+                    let _ = store.set_poll_vote(&jid, &message.id, &who, &picked, ts);
+                }
             }
             for r in &info.reactions {
                 if let (Some(key), Some(emoji)) = (r.key.as_option(), &r.text) {
@@ -1615,6 +1743,10 @@ async fn on_message(
         return;
     }
     let base = inbound.message.get_base_message();
+    if let Some(update) = base.poll_update_message.as_option() {
+        apply_vote(update, info, &chat, client, store, tx).await;
+        return;
+    }
     if apply_change(base, info, &chat, store, tx) {
         return;
     }
@@ -1656,6 +1788,95 @@ async fn on_message(
         is_group,
         live: !info.is_offline,
     });
+}
+
+/// Decrypts a vote in a stored poll and records it.
+async fn apply_vote(
+    update: &wa::message::PollUpdateMessage,
+    info: &MessageInfo,
+    chat: &str,
+    client: &Arc<Client>,
+    store: &Store,
+    tx: &UnboundedSender<WaEvent>,
+) {
+    let Some(poll_id) = update
+        .poll_creation_message_key
+        .as_option()
+        .and_then(|k| k.id.clone())
+    else {
+        return;
+    };
+    let Some(vote) = update.vote.as_option() else {
+        return;
+    };
+    let (Some(payload), Some(iv)) = (&vote.enc_payload, &vote.enc_iv) else {
+        return;
+    };
+    let Ok(Some((def, from_me, sender))) = store.poll_def(chat, &poll_id) else {
+        return;
+    };
+    let Some(secret) = hex::decode(&def.secret).ok().filter(|s| !s.is_empty()) else {
+        return;
+    };
+    let voter = info.source.sender.to_non_ad();
+    let creator = if from_me {
+        let own = if voter.is_lid() {
+            client.lid().or_else(|| client.pn())
+        } else {
+            client.pn().or_else(|| client.lid())
+        };
+        match own {
+            Some(j) => j.to_non_ad(),
+            None => return,
+        }
+    } else {
+        let who = if sender.is_empty() {
+            chat
+        } else {
+            sender.as_str()
+        };
+        match parse_jid(who) {
+            Ok(j) => j,
+            Err(_) => return,
+        }
+    };
+    let hashes = match client
+        .polls()
+        .decrypt_vote(
+            whatsapp_rust::PollVoteCiphertext {
+                enc_payload: payload,
+                enc_iv: iv,
+            },
+            &secret,
+            &poll_id,
+            &creator,
+            &voter,
+        )
+        .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            log::warn!("could not read a poll vote: {e}");
+            return;
+        }
+    };
+    let who = if info.source.is_from_me {
+        "me".to_string()
+    } else {
+        voter.to_string()
+    };
+    let ts = update
+        .sender_timestamp_ms
+        .map_or_else(|| info.timestamp.timestamp(), |ms| ms / 1000);
+    if store
+        .set_poll_vote(chat, &poll_id, &who, &def.names_for(&hashes), ts)
+        .is_ok()
+    {
+        let _ = tx.send(WaEvent::MessageChanged {
+            chat_jid: chat.to_string(),
+            id: poll_id,
+        });
+    }
 }
 
 fn store_view_once(info: &MessageInfo, store: &Store, tx: &UnboundedSender<WaEvent>) {
@@ -2008,5 +2229,118 @@ mod tests {
         assert_eq!(chats[0].unread, 1);
         assert!(chats[0].archived);
         assert_eq!(chats[0].last_preview, "chau");
+    }
+
+    fn poll_message(name: &str, options: &[&str], secret: Option<Vec<u8>>) -> wa::Message {
+        wa::Message {
+            poll_creation_message_v3: MessageField::some(wa::message::PollCreationMessage {
+                name: Some(name.into()),
+                options: options
+                    .iter()
+                    .map(|o| wa::message::poll_creation_message::Option {
+                        option_name: Some((*o).into()),
+                        option_hash: None,
+                    })
+                    .collect(),
+                selectable_options_count: Some(1),
+                ..Default::default()
+            }),
+            message_context_info: match secret {
+                Some(s) => MessageField::some(wa::MessageContextInfo {
+                    message_secret: Some(s),
+                    ..Default::default()
+                }),
+                None => MessageField::none(),
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn polls_are_described_with_options_and_secret() {
+        let d = describe(&poll_message(
+            "¿Cuándo?",
+            &["Hoy", "Mañana"],
+            Some(vec![7; 32]),
+        ));
+        assert_eq!(d.kind, "poll");
+        assert_eq!(d.text, "¿Cuándo?");
+        let poll = d.poll.expect("poll definition");
+        assert_eq!(poll.options, ["Hoy", "Mañana"]);
+        assert_eq!(poll.selectable, 1);
+        assert_eq!(poll.secret, hex::encode([7u8; 32]));
+        // A poll without options is not something we can show.
+        assert_eq!(describe(&poll_message("?", &[], None)).kind, "other");
+    }
+
+    #[test]
+    fn history_polls_keep_their_votes() {
+        use sha2::Digest;
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::open(&dir.path().join("t.db"), &crate::keychain::generate_key()).unwrap();
+        let hash = |o: &str| sha2::Sha256::digest(o.as_bytes()).to_vec();
+        let vote = |participant: Option<&str>, from_me: bool, pick: &str, ts: i64| wa::PollUpdate {
+            poll_update_message_key: MessageField::some(wa::MessageKey {
+                remote_jid: Some("g@g.us".into()),
+                from_me: Some(from_me),
+                id: Some(format!("v{ts}")),
+                participant: participant.map(Into::into),
+            }),
+            vote: MessageField::some(wa::message::PollVoteMessage {
+                selected_options: vec![hash(pick)],
+            }),
+            sender_timestamp_ms: Some(ts * 1000),
+            ..Default::default()
+        };
+        let history = wa::HistorySync {
+            conversations: vec![wa::Conversation {
+                id: "g@g.us".into(),
+                messages: vec![wa::HistorySyncMsg {
+                    message: MessageField::some(wa::WebMessageInfo {
+                        key: MessageField::some(wa::MessageKey {
+                            remote_jid: Some("g@g.us".into()),
+                            from_me: Some(false),
+                            id: Some("p1".into()),
+                            participant: Some("1@s.whatsapp.net".into()),
+                        }),
+                        message: MessageField::some(poll_message("¿Pizza?", &["Sí", "No"], None)),
+                        message_timestamp: Some(100),
+                        message_secret: Some(vec![9; 32]),
+                        poll_updates: vec![
+                            vote(Some("2@s.whatsapp.net"), false, "No", 110),
+                            vote(Some("2@s.whatsapp.net"), false, "Sí", 120),
+                            vote(None, true, "Sí", 115),
+                        ],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }],
+                conversation_timestamp: Some(100),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(import_history(&history, &store, &[]), 1);
+        let (def, from_me, sender) = store.poll_def("g@g.us", "p1").unwrap().unwrap();
+        assert_eq!(def.secret, hex::encode([9u8; 32]));
+        assert!(!from_me);
+        assert_eq!(sender, "1@s.whatsapp.net");
+        let page = store.list_messages("g@g.us", None, 10).unwrap();
+        let poll = page[0].poll.as_ref().expect("poll with votes");
+        let yes = &poll.options[0];
+        assert_eq!(yes.name, "Sí");
+        assert!(yes.mine);
+        assert_eq!(
+            yes.voters.len(),
+            1,
+            "the later vote replaced the earlier one"
+        );
+        assert_eq!(yes.voters[0].phone, "+2");
+        assert!(poll.options[1].voters.is_empty());
+        assert_eq!(
+            store.get_chat("g@g.us").unwrap().unwrap().last_preview,
+            "📊 ¿Pizza?"
+        );
     }
 }

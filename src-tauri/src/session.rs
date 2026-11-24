@@ -58,14 +58,14 @@ pub fn start_backfill(app: &AppHandle, state: &Arc<AppState>) {
     });
 }
 
-/// True when the chat is muted right now.
-fn muted(state: &AppState, jid: &str) -> bool {
+/// True when the chat must not notify right now: muted or archived.
+fn quiet(state: &AppState, jid: &str) -> bool {
     state
         .store
         .get_chat(jid)
         .ok()
         .flatten()
-        .is_some_and(|c| c.muted_until < 0 || c.muted_until > crate::assistant::now())
+        .is_some_and(|c| c.is_quiet(crate::assistant::now()))
 }
 
 pub async fn start(app: AppHandle, phone: Option<String>) -> Result<()> {
@@ -164,7 +164,7 @@ async fn on_event(app: &AppHandle, event: WaEvent) {
                 .map(Box::new)
                 .unwrap_or(message);
             crate::autoreply::on_incoming(app, &state, &message, is_group, mentions_me, live);
-            if live && !message.from_me && !muted(&state, &message.chat_jid) {
+            if live && !message.from_me && !quiet(&state, &message.chat_jid) {
                 crate::notify::deliver(app, &state, &message, is_group, false);
             }
             let _ = app.emit(EVENT_MESSAGE, &message);

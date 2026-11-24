@@ -57,6 +57,24 @@ pub async fn msg_react(
     Ok(())
 }
 
+/// Votes in a poll; an empty list clears our vote.
+#[tauri::command]
+pub async fn msg_vote_poll(
+    app: AppHandle,
+    state: St<'_>,
+    jid: String,
+    id: String,
+    options: Vec<String>,
+) -> Result<()> {
+    check(&jid, &id)?;
+    if options.len() > 12 || options.iter().any(|o| o.is_empty() || o.len() > 1024) {
+        return Err(Error::Invalid("poll choice".into()));
+    }
+    wa(&state).await?.vote_poll(&jid, &id, &options).await?;
+    changed(&app, &jid, &id);
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn msg_edit(
     app: AppHandle,

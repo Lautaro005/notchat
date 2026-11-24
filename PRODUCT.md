@@ -34,7 +34,7 @@ Always running in the background on a MacBook, mostly glanced at through the not
 - AI provider and model picker from what is installed; managed llama.cpp with a curated list of lightweight models.
 - Auto-reply: All / Selected / None, separate for chats and groups, off by default, global kill switch.
 - Assistant chat ("Notchat AI") is not a WhatsApp chat; sending to a contact shows a confirmation card unless the user turns confirmation off.
-- Notifications: toggle between notch panel and system notifications, both with inline reply.
+- Notifications: toggle between notch panel and system notifications, both with inline reply. Muted and archived chats never notify.
 - Unofficial client: must say so, must warn that automation can get a number banned, must not use the WhatsApp name or marks.
 - No claim of ISO 27001 / SOC 2 certification; controls are documented as "aligned, not certified".
 

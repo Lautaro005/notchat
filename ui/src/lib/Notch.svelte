@@ -32,7 +32,7 @@
   const preview = $derived(msg && msg.chat_jid === "preview@notchat");
   const body = $derived.by(() => {
     if (!msg) return "";
-    if (msg.text) return msg.text;
+    if (msg.text) return msg.kind === "poll" ? `📊 ${msg.text}` : msg.text;
     return ["image", "video", "audio", "voice", "document", "sticker"].includes(msg.kind) ? t(`kind.${msg.kind}` as Key) : "";
   });
   const initials = $derived(

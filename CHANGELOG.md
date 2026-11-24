@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.7 — 2026-11-24
+
+Polls, drag-and-drop that works and quieter archived chats.
+
+- **Polls.** Polls show up in chats with their question, options and live results. Click an option to vote (or click it again to take your vote back); "View votes" lists who picked what. Votes from your phone and other people update as they come in. Polls that arrived before this version were skipped at the time, so only new ones (and history fetched from now on) appear.
+- **Drag files into a chat.** Drop photos, videos or documents from Finder onto a conversation and they're attached, ready to send, like with the attach button. Folders are skipped.
+- **Who reacted.** Clicking a reaction under a message no longer adds the same reaction: it opens a small list of everyone who reacted and with which emoji, with tabs per emoji. Click your own row to remove your reaction.
+- **Date labels don't pile up.** Each day's label ("Today", "Sunday, November 22") sticks to the top only while that day's messages are on screen, instead of stacking on top of each other.
+- **Archived chats are quiet.** New messages in archived chats no longer show notifications (system or notch), like WhatsApp's "keep chats archived".
+- **Group members with names.** The participants list shows each person's name as in the chat list (contact name, or ~ and their WhatsApp name) with the phone number underneath in smaller type; people without a name show only their number. You appear as "You".
+
 ## 0.1.6 — 2026-11-23
 
 A clearer conversation and a much better-looking assistant.

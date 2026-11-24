@@ -60,13 +60,31 @@ const messages: Record<string, Message[]> = {
     m("4", chats[0].jid, 690, "", false, { kind: "image", has_media: true, size: 182000, mime: "image/jpeg" }),
     m("4b", chats[0].jid, 650, "", true, { kind: "voice", has_media: true, seconds: 14, mime: "audio/ogg" }),
     m("4c", chats[0].jid, 600, "", false, { kind: "document", has_media: true, size: 1240000, file_name: "Contrato alquiler 2026.pdf", mime: "application/pdf" }),
-    m("5", chats[0].jid, 400, "Perfecto. Llevo algo para tomar, ¿hace falta algo más? Puedo pasar por el súper de camino si me avisás antes de las 6.", true, { reactions: [{ emoji: "❤️", sender_jid: chats[0].jid, from_me: false }] }),
+    m("5", chats[0].jid, 400, "Perfecto. Llevo algo para tomar, ¿hace falta algo más? Puedo pasar por el súper de camino si me avisás antes de las 6.", true, { reactions: [{ emoji: "❤️", sender_jid: chats[0].jid, from_me: false, name: "Ana Suárez", phone: "+5491155550001" }] }),
     m("5b", chats[0].jid, 390, "Ah, y el código del portón es 4521", true, { edited: true, starred: true }),
     m("6", chats[0].jid, 200, "Llego 20:15, estoy saliendo de una reunión.", true, { by_ai: true }),
     m("6b", chats[0].jid, 150, "", false, { deleted: true }),
-    m("7", chats[0].jid, 90, "Dale, nos vemos a las 8 entonces", false, { quote_id: "6", quote_sender: "", quote_text: "Llego 20:15, estoy saliendo de una reunión.", quote_kind: "text", reactions: [{ emoji: "👍", sender_jid: "me", from_me: true }, { emoji: "👍", sender_jid: chats[0].jid, from_me: false }] }),
+    m("7", chats[0].jid, 90, "Dale, nos vemos a las 8 entonces", false, { quote_id: "6", quote_sender: "", quote_text: "Llego 20:15, estoy saliendo de una reunión.", quote_kind: "text", reactions: [{ emoji: "👍", sender_jid: "me", from_me: true, name: "", phone: "" }, { emoji: "👍", sender_jid: chats[0].jid, from_me: false, name: "Ana Suárez", phone: "+5491155550001" }] }),
   ],
   [chats[1].jid]: [
+    m("2c", chats[1].jid, 86400 * 2, "¿Qué día jugamos la semana que viene?", false, {
+      kind: "poll",
+      sender_jid: "5491155550009@s.whatsapp.net",
+      sender_name: "Tomás",
+      poll: {
+        selectable: 1,
+        options: [
+          { name: "Martes", voters: [], mine: false },
+          { name: "Jueves", voters: [{ jid: "5491155550008@s.whatsapp.net", user: "5491155550008", name: "Lucía R.", phone: "+5491155550008", saved: true }], mine: true },
+          { name: "Sábado", voters: [{ jid: "77120@lid", user: "77120", name: "~Nacho", phone: "+5491155550010", saved: false }], mine: false },
+        ],
+      },
+      reactions: [
+        { emoji: "🔥", sender_jid: "5491155550008@s.whatsapp.net", from_me: false, name: "Lucía R.", phone: "+5491155550008" },
+        { emoji: "👍", sender_jid: "77120@lid", from_me: false, name: "~Nacho", phone: "+5491155550010" },
+        { emoji: "👍", sender_jid: "me", from_me: true, name: "", phone: "" },
+      ],
+    }),
     m("1", chats[1].jid, 3000, "¿Quién juega hoy?", false, { sender_jid: "5491155550009@s.whatsapp.net", sender_name: "Tomás" }),
     m("2", chats[1].jid, 2900, "Yo voy", true),
     m("2b", chats[1].jid, 2600, "", false, { kind: "sticker", has_media: true, sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
@@ -175,9 +193,12 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
         created: now - 86400 * 400,
         i_am_admin: false,
         participants: [
-          { jid: "5491155550009@s.whatsapp.net", name: "Tomás", admin: true },
-          { jid: "5491155550008@s.whatsapp.net", name: "Lucía R.", admin: false },
-          { jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", admin: false },
+          { jid: "5491155550009@s.whatsapp.net", name: "Tomás", phone: "+5491155550009", admin: true, me: false },
+          { jid: "5491155550008@s.whatsapp.net", name: "Lucía R.", phone: "+5491155550008", admin: false, me: false },
+          { jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", phone: "+5491155550001", admin: false, me: false },
+          { jid: "77120@lid", name: "~Nacho", phone: "+5491155550010", admin: false, me: false },
+          { jid: "5491155550022@s.whatsapp.net", name: "", phone: "+5491155550022", admin: false, me: false },
+          { jid: "5491155550000@s.whatsapp.net", name: "", phone: "+5491155550000", admin: false, me: true },
         ],
       };
     case "storage_info":

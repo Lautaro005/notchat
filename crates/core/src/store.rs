@@ -35,6 +35,14 @@ pub struct Chat {
     pub last_from_me: bool,
 }
 
+impl Chat {
+    /// True when new messages must not notify: the chat is muted or archived
+    /// (archived chats stay quiet, like WhatsApp's "keep chats archived").
+    pub fn is_quiet(&self, now: i64) -> bool {
+        self.archived || self.muted_until < 0 || self.muted_until > now
+    }
+}
+
 /// A user-made group of chats ("list"), stored only on this Mac.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ChatList {
@@ -112,6 +120,66 @@ pub struct Message {
     /// Display name of whoever wrote the quoted message.
     #[serde(default)]
     pub quote_name: String,
+    /// Options and votes of a poll (`kind = "poll"`), resolved when read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub poll: Option<Poll>,
+    /// The stored poll definition (JSON of [`PollDef`]); never sent to the UI.
+    #[serde(default, skip)]
+    pub poll_def: String,
+}
+
+/// A poll as WhatsApp defines it: what is stored with the message.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PollDef {
+    pub options: Vec<String>,
+    /// How many options one person may pick; 0 means any number.
+    #[serde(default)]
+    pub selectable: u32,
+    /// Hex of the message secret that votes are encrypted with.
+    #[serde(default)]
+    pub secret: String,
+}
+
+impl PollDef {
+    pub fn parse(json: &str) -> Option<Self> {
+        serde_json::from_str(json)
+            .ok()
+            .filter(|d: &Self| !d.options.is_empty())
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+
+    /// Option names whose SHA-256 is among `hashes` (how votes name them).
+    pub fn names_for(&self, hashes: &[Vec<u8>]) -> Vec<String> {
+        use sha2::Digest;
+        self.options
+            .iter()
+            .filter(|o| {
+                let h = sha2::Sha256::digest(o.as_bytes());
+                hashes.iter().any(|x| x.as_slice() == h.as_slice())
+            })
+            .cloned()
+            .collect()
+    }
+}
+
+/// A poll as shown: each option with who picked it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct Poll {
+    /// How many options one person may pick; 0 means any number.
+    pub selectable: u32,
+    pub options: Vec<PollOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PollOption {
+    pub name: String,
+    /// Everyone who picked this option except us.
+    pub voters: Vec<Person>,
+    /// True when we picked it.
+    pub mine: bool,
 }
 
 impl Message {
@@ -147,6 +215,12 @@ pub struct Reaction {
     pub emoji: String,
     pub sender_jid: String,
     pub from_me: bool,
+    /// Who reacted, resolved when read (contact name, `~` name or phone).
+    #[serde(default)]
+    pub name: String,
+    /// Their phone number (`+…`), when known.
+    #[serde(default)]
+    pub phone: String,
 }
 
 /// A sticker the account has used or received, ready to send again.
@@ -207,7 +281,7 @@ pub struct Oldest {
 /// Columns read by [`row_to_message`], in order.
 const MSG_COLS: &str = "id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
     mime,file_name,size,seconds,media IS NOT NULL,quote_id,quote_sender,quote_text,
-    quote_kind,forwarded,edited,deleted,starred,pinned,mentions";
+    quote_kind,forwarded,edited,deleted,starred,pinned,mentions,poll";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS chats (
@@ -270,6 +344,14 @@ CREATE TABLE IF NOT EXISTS reactions (
   emoji TEXT NOT NULL,
   ts INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (chat_jid, msg_id, sender_jid)
+);
+CREATE TABLE IF NOT EXISTS poll_votes (
+  chat_jid TEXT NOT NULL,
+  msg_id TEXT NOT NULL,
+  voter TEXT NOT NULL,
+  options TEXT NOT NULL DEFAULT '[]',
+  ts INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (chat_jid, msg_id, voter)
 );
 CREATE TABLE IF NOT EXISTS stickers (
   id TEXT PRIMARY KEY,
@@ -761,8 +843,8 @@ impl Store {
             "INSERT OR IGNORE INTO messages
                (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
                 mime,file_name,size,seconds,media,raw,
-                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions,poll)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             params![
                 m.chat_jid,
                 m.id,
@@ -784,7 +866,8 @@ impl Store {
                 m.quote_text,
                 m.quote_kind,
                 m.forwarded,
-                m.mention_jids.join(",")
+                m.mention_jids.join(","),
+                m.poll_def
             ],
         )? > 0;
         if inserted {
@@ -846,6 +929,7 @@ impl Store {
         let Some(m) = found else { return Ok(None) };
         let mut one = [m];
         attach_reactions(&conn, chat_jid, &mut one)?;
+        attach_polls(&conn, &mut one)?;
         resolve_people(&conn, &mut one);
         let [m] = one;
         Ok(Some(m))
@@ -932,6 +1016,7 @@ impl Store {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [jid])?;
         tx.execute("DELETE FROM reactions WHERE chat_jid = ?1", [jid])?;
+        tx.execute("DELETE FROM poll_votes WHERE chat_jid = ?1", [jid])?;
         tx.execute(
             "UPDATE chats SET last_preview = '', unread = 0, marked_unread = 0 WHERE jid = ?1",
             [jid],
@@ -946,6 +1031,7 @@ impl Store {
         let tx = conn.transaction()?;
         tx.execute("DELETE FROM messages WHERE chat_jid = ?1", [jid])?;
         tx.execute("DELETE FROM reactions WHERE chat_jid = ?1", [jid])?;
+        tx.execute("DELETE FROM poll_votes WHERE chat_jid = ?1", [jid])?;
         tx.execute("DELETE FROM list_members WHERE jid = ?1", [jid])?;
         tx.execute("DELETE FROM chats WHERE jid = ?1", [jid])?;
         tx.commit()?;
@@ -1081,6 +1167,7 @@ impl Store {
         out.reverse();
         drop(stmt);
         attach_reactions(&conn, chat_jid, &mut out)?;
+        attach_polls(&conn, &mut out)?;
         resolve_people(&conn, &mut out);
         Ok(out)
     }
@@ -1155,6 +1242,49 @@ impl Store {
         Ok(())
     }
 
+    /// Records one person's choice in a poll; `voter` is "me" for our own.
+    /// Only a newer vote replaces an older one; an empty choice clears it.
+    pub fn set_poll_vote(
+        &self,
+        chat_jid: &str,
+        msg_id: &str,
+        voter: &str,
+        options: &[String],
+        ts: i64,
+    ) -> Result<()> {
+        let voter = if voter == "me" {
+            voter.to_string()
+        } else {
+            self.canonical_jid(&bare_jid(voter))
+        };
+        let picked = serde_json::to_string(options).unwrap_or_else(|_| "[]".into());
+        self.lock().execute(
+            "INSERT INTO poll_votes (chat_jid, msg_id, voter, options, ts)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(chat_jid, msg_id, voter) DO UPDATE SET
+               options = excluded.options, ts = excluded.ts
+             WHERE excluded.ts >= poll_votes.ts",
+            params![chat_jid, msg_id, voter, picked, ts],
+        )?;
+        Ok(())
+    }
+
+    /// A stored poll's definition, with who created it (`from_me`, sender).
+    pub fn poll_def(&self, chat_jid: &str, id: &str) -> Result<Option<(PollDef, bool, String)>> {
+        let row = self
+            .lock()
+            .query_row(
+                "SELECT poll, from_me, sender_jid FROM messages
+                 WHERE chat_jid = ?1 AND id = ?2 AND kind = 'poll' AND deleted = 0",
+                params![chat_jid, id],
+                |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        Ok(row.and_then(|(json, from_me, sender)| {
+            PollDef::parse(&json).map(|d| (d, from_me, sender))
+        }))
+    }
+
     /// Replaces a message's text after an edit.
     pub fn edit_message(&self, chat_jid: &str, id: &str, text: &str) -> Result<bool> {
         let conn = self.lock();
@@ -1171,12 +1301,16 @@ impl Store {
         let conn = self.lock();
         let n = conn.execute(
             "UPDATE messages SET deleted = 1, text = '', media = NULL, raw = NULL,
-                    quote_text = '', pinned = 0
+                    quote_text = '', pinned = 0, poll = ''
              WHERE chat_jid = ?1 AND id = ?2",
             params![chat_jid, id],
         )?;
         conn.execute(
             "DELETE FROM reactions WHERE chat_jid = ?1 AND msg_id = ?2",
+            params![chat_jid, id],
+        )?;
+        conn.execute(
+            "DELETE FROM poll_votes WHERE chat_jid = ?1 AND msg_id = ?2",
             params![chat_jid, id],
         )?;
         refresh_preview(&conn, chat_jid)?;
@@ -1192,6 +1326,10 @@ impl Store {
         )?;
         conn.execute(
             "DELETE FROM reactions WHERE chat_jid = ?1 AND msg_id = ?2",
+            params![chat_jid, id],
+        )?;
+        conn.execute(
+            "DELETE FROM poll_votes WHERE chat_jid = ?1 AND msg_id = ?2",
             params![chat_jid, id],
         )?;
         refresh_preview(&conn, chat_jid)?;
@@ -1440,7 +1578,7 @@ impl Store {
     pub fn clear_whatsapp_data(&self) -> Result<()> {
         self.lock().execute_batch(
             "DELETE FROM messages; DELETE FROM chats; DELETE FROM list_members;
-             DELETE FROM contacts; DELETE FROM lid_map; DELETE FROM history_done; DELETE FROM reactions; DELETE FROM stickers;",
+             DELETE FROM contacts; DELETE FROM lid_map; DELETE FROM history_done; DELETE FROM reactions; DELETE FROM poll_votes; DELETE FROM stickers;",
         )?;
         Ok(())
     }
@@ -1493,6 +1631,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         ("chats", "last_sender_name", "TEXT NOT NULL DEFAULT ''"),
         ("chats", "last_from_me", "INTEGER NOT NULL DEFAULT 0"),
         ("messages", "mentions", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "poll", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (table, column, decl) in columns {
         if !has(table, column)? {
@@ -1553,6 +1692,7 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             .filter(|j| !j.is_empty())
             .map(str::to_string)
             .collect(),
+        poll_def: r.get(24)?,
         ..Default::default()
     })
 }
@@ -1669,7 +1809,60 @@ fn resolve_people(conn: &Connection, out: &mut [Message]) {
             m.quote_name = get(&m.quote_sender, "").name;
         }
         m.mentions = m.mention_jids.iter().map(|j| get(j, "")).collect();
+        for r in m.reactions.iter_mut().filter(|r| !r.from_me) {
+            let p = get(&r.sender_jid, "");
+            r.name = p.name;
+            r.phone = p.phone;
+        }
+        if let Some(poll) = m.poll.as_mut() {
+            for v in poll.options.iter_mut().flat_map(|o| o.voters.iter_mut()) {
+                *v = get(&v.jid, "");
+            }
+        }
     }
+}
+
+/// Builds the options and votes of the polls in a page of messages.
+fn attach_polls(conn: &Connection, out: &mut [Message]) -> Result<()> {
+    for m in out.iter_mut().filter(|m| m.kind == "poll") {
+        let Some(def) = PollDef::parse(&m.poll_def) else {
+            continue;
+        };
+        let mut options: Vec<PollOption> = def
+            .options
+            .iter()
+            .map(|name| PollOption {
+                name: name.clone(),
+                ..Default::default()
+            })
+            .collect();
+        let mut stmt = conn.prepare_cached(
+            "SELECT voter, options FROM poll_votes WHERE chat_jid = ?1 AND msg_id = ?2
+             ORDER BY ts",
+        )?;
+        let rows = stmt.query_map(params![m.chat_jid, m.id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (voter, picked) = row?;
+            let picked: Vec<String> = serde_json::from_str(&picked).unwrap_or_default();
+            for o in options.iter_mut().filter(|o| picked.contains(&o.name)) {
+                if voter == "me" {
+                    o.mine = true;
+                } else {
+                    o.voters.push(Person {
+                        jid: voter.clone(),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
+        m.poll = Some(Poll {
+            selectable: def.selectable,
+            options,
+        });
+    }
+    Ok(())
 }
 
 fn attach_reactions(conn: &Connection, chat_jid: &str, out: &mut [Message]) -> Result<()> {
@@ -1689,6 +1882,7 @@ fn attach_reactions(conn: &Connection, chat_jid: &str, out: &mut [Message]) -> R
                 emoji: r.get(1)?,
                 sender_jid: r.get(2)?,
                 from_me: r.get(3)?,
+                ..Default::default()
             },
         ))
     })?;
@@ -1726,6 +1920,8 @@ fn refresh_preview(conn: &Connection, chat_jid: &str) -> Result<()> {
 fn preview_of(m: &Message) -> String {
     let base = if m.deleted {
         "[deleted]".to_string()
+    } else if m.kind == "poll" {
+        format!("📊 {}", m.text)
     } else if m.text.is_empty() {
         format!("[{}]", m.kind)
     } else {
@@ -1935,6 +2131,78 @@ mod tests {
         // Unknown LID without a name: nothing to show but the id itself.
         assert_eq!(s.person("123@lid", "").name, "");
         assert_eq!(s.person("123@lid", "Zoe").name, "~Zoe");
+    }
+
+    #[test]
+    fn archived_and_muted_chats_are_quiet() {
+        let chat = |archived, muted_until| Chat {
+            archived,
+            muted_until,
+            ..Default::default()
+        };
+        assert!(!chat(false, 0).is_quiet(100));
+        assert!(chat(true, 0).is_quiet(100), "archived chats never notify");
+        assert!(chat(false, -1).is_quiet(100));
+        assert!(chat(false, 200).is_quiet(100));
+        assert!(!chat(false, 50).is_quiet(100), "mute expired");
+    }
+
+    #[test]
+    fn reactions_and_poll_votes_carry_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        let mut poll = msg("g@g.us", "p", 10, "¿Cine?", false);
+        poll.kind = "poll".into();
+        poll.poll_def = PollDef {
+            options: vec!["Sí".into(), "No".into()],
+            selectable: 0,
+            secret: String::new(),
+        }
+        .to_json();
+        s.insert_message(&poll, true).unwrap();
+        s.upsert_contact("1@s.whatsapp.net", "Ana", false).unwrap();
+        s.map_lid("77@lid", "1@s.whatsapp.net").unwrap();
+        s.set_reaction("g@g.us", "p", "77@lid", false, "👍", 11)
+            .unwrap();
+        s.set_reaction("g@g.us", "p", "", true, "❤️", 12).unwrap();
+        // The same person votes by private id and then by phone number.
+        s.set_poll_vote("g@g.us", "p", "77@lid", &["No".into()], 20)
+            .unwrap();
+        s.set_poll_vote("g@g.us", "p", "1@s.whatsapp.net", &["Sí".into()], 30)
+            .unwrap();
+        // A late, older vote does not win.
+        s.set_poll_vote("g@g.us", "p", "1@s.whatsapp.net", &["No".into()], 25)
+            .unwrap();
+        s.set_poll_vote("g@g.us", "p", "me", &["Sí".into(), "No".into()], 31)
+            .unwrap();
+        let m = s.get_message("g@g.us", "p").unwrap().unwrap();
+        let theirs = m.reactions.iter().find(|r| !r.from_me).unwrap();
+        assert_eq!(theirs.name, "Ana");
+        assert_eq!(theirs.phone, "+1");
+        let poll = m.poll.unwrap();
+        assert_eq!(poll.options[0].voters.len(), 1);
+        assert_eq!(poll.options[0].voters[0].name, "Ana");
+        assert!(poll.options[0].mine && poll.options[1].mine);
+        assert!(poll.options[1].voters.is_empty());
+        // Clearing our vote, then deleting the poll, leaves nothing behind.
+        s.set_poll_vote("g@g.us", "p", "me", &[], 40).unwrap();
+        let m = s.get_message("g@g.us", "p").unwrap().unwrap();
+        assert!(m.poll.unwrap().options.iter().all(|o| !o.mine));
+        s.mark_deleted("g@g.us", "p").unwrap();
+        assert!(s.poll_def("g@g.us", "p").unwrap().is_none());
+    }
+
+    #[test]
+    fn poll_option_hashes_map_to_names() {
+        use sha2::Digest;
+        let def = PollDef {
+            options: vec!["A".into(), "B".into()],
+            ..Default::default()
+        };
+        let b = sha2::Sha256::digest(b"B").to_vec();
+        assert_eq!(def.names_for(&[b, vec![0; 32]]), ["B"]);
+        assert!(PollDef::parse("").is_none());
+        assert_eq!(PollDef::parse(&def.to_json()), Some(def));
     }
 
     #[test]

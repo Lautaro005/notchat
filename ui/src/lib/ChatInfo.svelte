@@ -92,10 +92,14 @@
         {:else if info}
           <ul class="people">
             {#each info.participants as p (p.jid)}
-              {@const name = p.name || chatTitle({ jid: p.jid, name: "" })}
+              {@const name = p.me ? t("chat.you") : p.name || p.phone || chatTitle({ jid: p.jid, name: "" })}
+              {@const sub = p.me ? p.phone : p.name ? p.phone : ""}
               <li>
                 <Avatar title={name} jid={p.jid} size={32} />
-                <span class="pname">{name}</span>
+                <span class="pwho">
+                  <span class="pname" class:num={!p.name && !p.me}>{name}</span>
+                  {#if sub}<small class="pphone num">{sub}</small>{/if}
+                </span>
                 {#if p.admin}<span class="tag">{t("info.admin")}</span>{/if}
               </li>
             {/each}
@@ -245,13 +249,24 @@
     gap: 10px;
     height: 44px;
   }
-  .pname {
+  .pwho {
     flex: 1;
     min-width: 0;
-    font-weight: 500;
+    display: grid;
+    line-height: 1.25;
+  }
+  .pname,
+  .pphone {
     overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+  .pname {
+    font-weight: 500;
+  }
+  .pphone {
+    font-size: 11.5px;
+    color: var(--text-3);
   }
   .tag {
     padding: 2px 7px;

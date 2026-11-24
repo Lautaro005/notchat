@@ -74,6 +74,8 @@ pub fn deliver(
         }
         let body = if message.text.is_empty() {
             format!("[{}]", message.kind)
+        } else if message.kind == "poll" {
+            format!("📊 {}", message.text.chars().take(240).collect::<String>())
         } else {
             message.text_with_names().chars().take(240).collect()
         };

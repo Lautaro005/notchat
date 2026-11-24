@@ -40,7 +40,7 @@
 | V1 Encoding and sanitization | Svelte escapes all text; no `{@html}` with message content; QR SVG generated in Rust |
 | V2 Validation and business logic | Typed IPC payloads, length and charset checks, rate limits on automation |
 | V4 API and web service | IPC surface is an explicit allowlist of commands |
-| V5 File handling | Attachments: 15 MB cap, type sniffing, path components stripped, PDF parser panics contained |
+| V5 File handling | Attachments (button, paste or drag-and-drop): 15 MB cap, type sniffing, path components stripped, PDF parser panics contained; dropped folders skipped and drops outside the conversation cancelled |
 | V8 Authorization | The assistant cannot send without the user's confirmation once untrusted content is in play |
 | V11 Cryptography | Vetted implementations only (SQLCipher, rustls, sha2) |
 | V12 Secure communication | TLS 1.2+ via rustls for every remote request; HTTPS-only downloads |

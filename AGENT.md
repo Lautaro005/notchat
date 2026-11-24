@@ -121,6 +121,12 @@ npm --prefix ui run check
 - Puertos de los proveedores locales: ajuste `ai_ports` (`ProviderPorts`), siempre en 127.0.0.1 y ≥ 1024.
 - Vista previa del notch en el navegador: `http://127.0.0.1:1420/?view=notch#notch`.
 - Actualizaciones: `crates/core/src/update.rs` (verifica `SHA256SUMS` del release) y `src-tauri/src/updater.rs` (reemplaza el `.app` al salir).
+- Encuestas (0.1.7): `kind = "poll"`, la pregunta en `text` y la definición (`PollDef`: opciones, `selectable`, `secret` en hex) en `messages.poll`, que nunca va a la UI. Los votos van a `poll_votes` (votante canónico o `me`, nombres de opción en JSON; gana el voto más nuevo). En vivo se descifran con `client.polls().decrypt_vote`; el historial trae `poll_updates` ya descifrados y `message_secret` en el `WebMessageInfo`. Votar: `WaClient::vote_poll` / comando `msg_vote_poll`. Al leer, `attach_polls` arma `Message.poll` y `resolve_people` pone nombres a votantes y reacciones.
+- Notificaciones: `Chat::is_quiet` (silenciado o archivado) decide si un mensaje avisa (`session.rs`).
+- Arrastrar archivos: `dragDropEnabled: false` en `tauri.conf.json` para que el webview reciba los `drop` (si no, Tauri se los queda). `App.svelte` cancela los drops fuera de la conversación para que la ventana no navegue al archivo.
+- Fechas en la conversación: los mensajes se agrupan por día (`.dayblock`) para que cada etiqueta sticky quede dentro de su día y no se apilen.
+- Reacciones: clic en una reacción abre `ReactionList.svelte` (quién reaccionó, con nombre y teléfono); la propia se quita desde ahí.
+- Chequear `src-tauri` desde Linux: `rustup target add aarch64-apple-darwin` y `cargo check/clippy --target aarch64-apple-darwin` con `CC_aarch64_apple_darwin` apuntando a un compilador C falso que solo crea objetos vacíos (no linkea, solo tipa).
 
 ## Acciones que requieren confirmación del usuario
 

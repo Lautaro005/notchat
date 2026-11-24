@@ -165,8 +165,10 @@
     files = [...files, ...ok].slice(0, 10);
   }
 
+  /** Files dropped on the conversation: queued like the attach button, ready to send. */
   export function add(list: FileList | File[] | null) {
     addFiles(list);
+    void tick().then(() => input?.focus());
   }
 
   async function submit() {

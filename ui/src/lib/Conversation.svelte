@@ -6,9 +6,10 @@
   import Icon from "./Icon.svelte";
   import MediaView from "./MediaView.svelte";
   import ReactBar from "./ReactBar.svelte";
+  import ReactionList from "./ReactionList.svelte";
   import VoicePlayer from "./VoicePlayer.svelte";
   import { api } from "./api";
-  import { app, chatTitle, fetchOlderFromPhone, isMuted, loadOlder, openMenu } from "./app.svelte";
+  import { app, chatTitle, fetchOlderFromPhone, isMuted, loadOlder, openMenu, toast } from "./app.svelte";
   import { chatMenu } from "./chatMenu";
   import {
     copyText,
@@ -31,6 +32,13 @@
   let files = $state<File[]>([]);
   let dragging = $state(0);
   let reacting = $state<{ m: Message; x: number; y: number } | null>(null);
+  /** The "who reacted" list, anchored to the pill that opened it. */
+  let reactors = $state<{ id: string; x: number; top: number; bottom: number } | null>(null);
+  const reactorsMsg = $derived(reactors ? (app.messages.find((m) => m.id === reactors!.id) ?? null) : null);
+  /** Polls whose voters are listed under each option. */
+  let openVotes = $state<string[]>([]);
+  /** Polls with a vote on its way, so a double click doesn't send two. */
+  let voting = $state<string[]>([]);
   let pinIndex = $state(0);
   let flash = $state<string | null>(null);
 
@@ -43,6 +51,19 @@
   const tags = $derived(app.selected ? app.lists.filter((l) => l.jids.includes(app.selected!)) : []);
 
   const visual = new Set(["image", "video", "sticker"]);
+
+  /** Messages grouped by day: each day's label sticks only while its own
+   *  messages are on screen, so labels never pile up at the top. */
+  const days = $derived.by(() => {
+    const out: { key: number; ts: number; items: { m: Message; i: number }[] }[] = [];
+    app.messages.forEach((m, i) => {
+      const key = dayKey(m.ts);
+      const last = out[out.length - 1];
+      if (last && last.key === key) last.items.push({ m, i });
+      else out.push({ key, ts: m.ts, items: [{ m, i }] });
+    });
+    return out;
+  });
 
   // Follow the tail when a message is appended or a chat is opened.
   $effect(() => {
@@ -96,6 +117,8 @@
     void app.selected;
     pinIndex = 0;
     reacting = null;
+    reactors = null;
+    openVotes = [];
   });
 
   async function older() {
@@ -206,6 +229,42 @@
     );
   }
 
+  function showReactors(m: Message, anchor: HTMLElement) {
+    const r = anchor.getBoundingClientRect();
+    reactors = { id: m.id, x: r.left + r.width / 2, top: r.top, bottom: r.bottom };
+  }
+
+  function votes(o: { voters: Person[]; mine: boolean }): number {
+    return o.voters.length + Number(o.mine);
+  }
+
+  /** Picks or unpicks an option: one-choice polls move the vote, the rest add to it. */
+  async function vote(m: Message, name: string) {
+    if (!m.poll || m.deleted || voting.includes(m.id)) return;
+    const mine = m.poll.options.filter((o) => o.mine).map((o) => o.name);
+    let next: string[];
+    if (mine.includes(name)) next = mine.filter((n) => n !== name);
+    else if (m.poll.selectable === 1) next = [name];
+    else if (m.poll.selectable > 1 && mine.length >= m.poll.selectable) return;
+    else next = [...mine, name];
+    voting = [...voting, m.id];
+    try {
+      await api.votePoll(m.chat_jid, m.id, next);
+    } catch (e) {
+      toast(typeof e === "string" ? e : t("poll.failed"));
+    } finally {
+      voting = voting.filter((id) => id !== m.id);
+    }
+  }
+
+  function toggleVotes(id: string) {
+    openVotes = openVotes.includes(id) ? openVotes.filter((x) => x !== id) : [...openVotes, id];
+  }
+
+  function voterName(p: Person): string {
+    return p.name || p.phone || p.user;
+  }
+
   function openReact(m: Message, anchor: HTMLElement) {
     const r = anchor.getBoundingClientRect();
     reacting = { m, x: r.left + r.width / 2, y: r.top };
@@ -257,7 +316,14 @@
   function onDrop(e: DragEvent) {
     e.preventDefault();
     dragging = 0;
-    composer?.add([...(e.dataTransfer?.files ?? [])]);
+    const dt = e.dataTransfer;
+    if (!dt) return;
+    // Folders can't be sent: keep only real files.
+    const items = [...dt.items].filter((it) => it.kind === "file");
+    const dropped = items.length
+      ? items.filter((it) => !it.webkitGetAsEntry?.()?.isDirectory).map((it) => it.getAsFile()).filter((f): f is File => !!f)
+      : [...dt.files];
+    if (dropped.length) composer?.add(dropped);
   }
 
   function headerMore(e: MouseEvent) {
@@ -365,12 +431,12 @@
         {:else if app.hasOlder}
           <button class="btn quiet older" onclick={older} disabled={app.loadingOlder}>{t("chat.older")}</button>
         {/if}
-        {#each app.messages as m, i (m.id)}
+        {#each days as day (day.key)}
+        <div class="dayblock">
+        <div class="day"><span>{dayLabel(day.ts)}</span></div>
+        {#each day.items as { m, i } (m.id)}
           {@const prev = app.messages[i - 1]}
           {@const next = app.messages[i + 1]}
-          {#if !prev || dayKey(prev.ts) !== dayKey(m.ts)}
-            <div class="day"><span>{dayLabel(m.ts)}</span></div>
-          {/if}
           {#if m.id === firstUnread && app.unreadMark}
             <div class="unread-divider" id="unread-divider" role="status">
               <span>{app.unreadMark.count === 1 ? t("chat.unreadOne") : tf("chat.unreadMany", { n: app.unreadMark.count })}</span>
@@ -440,10 +506,47 @@
                         <small>{t("msg.viewOnceHint")}</small>
                       </span>
                     </span>
+                  {:else if m.kind === "poll" && m.poll}
+                    {@const poll = m.poll}
+                    {@const total = poll.options.reduce((n, o) => n + votes(o), 0)}
+                    {@const top = Math.max(1, ...poll.options.map(votes))}
+                    {@const showVoters = openVotes.includes(m.id)}
+                    <div class="poll" class:busy={voting.includes(m.id)}>
+                      <span class="poll-head"><Icon name="poll" size={14} />{t("kind.poll")}</span>
+                      <strong class="poll-q">{m.text}</strong>
+                      <small class="poll-hint">{poll.selectable === 1 ? t("poll.one") : t("poll.many")}</small>
+                      <ul class="poll-opts">
+                        {#each poll.options as o (o.name)}
+                          {@const n = votes(o)}
+                          <li>
+                            <button
+                              class="poll-opt"
+                              class:mine={o.mine}
+                              aria-pressed={o.mine}
+                              disabled={app.selecting}
+                              onclick={(e) => { e.stopPropagation(); void vote(m, o.name); }}
+                            >
+                              <span class="pick" class:round={poll.selectable === 1} aria-hidden="true">{#if o.mine}<Icon name="check" size={11} />{/if}</span>
+                              <span class="poll-line">
+                                <span class="poll-name">{o.name}</span>
+                                <span class="poll-bar" aria-hidden="true"><i style:width="{(n / top) * 100}%"></i></span>
+                              </span>
+                              <span class="poll-n num">{n}</span>
+                            </button>
+                            {#if showVoters && n > 0}
+                              <span class="voters">{[...(o.mine ? [t("chat.you")] : []), ...o.voters.map(voterName)].join(", ")}</span>
+                            {/if}
+                          </li>
+                        {/each}
+                      </ul>
+                      <button class="poll-more" disabled={total === 0} onclick={(e) => { e.stopPropagation(); toggleVotes(m.id); }}>
+                        {total === 0 ? t("poll.noVotes") : showVoters ? t("poll.hideVotes") : tf(total === 1 ? "poll.viewVote" : "poll.viewVotes", { n: total })}
+                      </button>
+                    </div>
                   {:else if m.kind !== "text"}
                     <span class="kind">{t(`kind.${m.kind}` as Key)}</span>
                   {/if}
-                  {#if m.text}<span class="text" class:aftermedia={visual.has(m.kind)}>{#each parts(m) as part, j (j)}{#if "p" in part}<button class="mention" onclick={(e) => showPerson(e, part.p)}>@{part.p.name || part.p.phone || part.p.user}</button>{:else if "url" in part}<a class="link" href={part.url} rel="noreferrer" onclick={(e) => e.stopPropagation()}>{part.label}</a>{:else}{part.text}{/if}{/each}</span>{/if}
+                  {#if m.text && m.kind !== "poll"}<span class="text" class:aftermedia={visual.has(m.kind)}>{#each parts(m) as part, j (j)}{#if "p" in part}<button class="mention" onclick={(e) => showPerson(e, part.p)}>@{part.p.name || part.p.phone || part.p.user}</button>{:else if "url" in part}<a class="link" href={part.url} rel="noreferrer" onclick={(e) => e.stopPropagation()}>{part.label}</a>{:else}{part.text}{/if}{/each}</span>{/if}
                 {/if}
                 <span class="meta num">
                   {#if m.starred}<Icon name="star" size={11} />{/if}
@@ -461,7 +564,13 @@
               {#if reactions.length}
                 <div class="reactions">
                   {#each reactions as r (r.emoji)}
-                    <button class="rx" class:mine={r.mine} aria-pressed={r.mine} onclick={(e) => { e.stopPropagation(); react(m, r.emoji); }}>
+                    <button
+                      class="rx"
+                      class:mine={r.mine}
+                      aria-haspopup="dialog"
+                      title={t("rx.title")}
+                      onclick={(e) => { e.stopPropagation(); showReactors(m, e.currentTarget); }}
+                    >
                       <span>{r.emoji}</span>{#if r.count > 1}<small class="num">{r.count}</small>{/if}
                     </button>
                   {/each}
@@ -479,6 +588,8 @@
               </div>
             {/if}
           </article>
+        {/each}
+        </div>
         {/each}
       </div>
 
@@ -519,6 +630,21 @@
       <ChatInfo {chat} />
     {/if}
   </div>
+{/if}
+
+{#if reactors && reactorsMsg}
+  {@const target = reactorsMsg}
+  <ReactionList
+    reactions={target.reactions}
+    x={reactors.x}
+    top={reactors.top}
+    bottom={reactors.bottom}
+    onremove={() => {
+      react(target, myReaction(target));
+      reactors = null;
+    }}
+    onclose={() => (reactors = null)}
+  />
 {/if}
 
 {#if reacting}
@@ -760,6 +886,10 @@
   .older {
     align-self: center;
     margin-bottom: 8px;
+  }
+  .dayblock {
+    display: flex;
+    flex-direction: column;
   }
   .day {
     position: sticky;
@@ -1242,6 +1372,145 @@
   }
   .icon-btn.danger {
     color: var(--danger);
+  }
+
+  /* ---- poll ---- */
+  .poll {
+    width: 290px;
+    max-width: 100%;
+    display: grid;
+    gap: 2px;
+    padding: 2px 0 0;
+    transition: opacity 160ms var(--ease);
+  }
+  .poll.busy {
+    opacity: 0.7;
+  }
+  .poll-head {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    opacity: 0.65;
+  }
+  .poll-q {
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+  .poll-hint {
+    font-size: 11.5px;
+    opacity: 0.65;
+  }
+  .poll-opts {
+    margin: 6px 0 2px;
+    padding: 0;
+    list-style: none;
+    display: grid;
+    gap: 4px;
+  }
+  .poll-opt {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 6px 6px 6px 4px;
+    border-radius: 10px;
+    text-align: left;
+    color: inherit;
+    transition: background 140ms var(--ease);
+  }
+  .poll-opt:hover:not(:disabled),
+  .poll-opt:focus-visible {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+    outline: none;
+  }
+  .pick {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    display: grid;
+    place-items: center;
+    border-radius: 5px;
+    box-shadow: inset 0 0 0 1.5px color-mix(in srgb, currentColor 45%, transparent);
+  }
+  .pick.round {
+    border-radius: 50%;
+  }
+  .poll-opt.mine .pick {
+    background: var(--accent);
+    color: var(--on-accent);
+    box-shadow: none;
+  }
+  .me .poll-opt.mine .pick {
+    background: var(--on-mine);
+    color: var(--mine);
+  }
+  .poll-line {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+    gap: 5px;
+  }
+  .poll-name {
+    font-size: 13.5px;
+    overflow-wrap: anywhere;
+  }
+  .poll-bar {
+    height: 5px;
+    border-radius: 3px;
+    background: color-mix(in srgb, currentColor 14%, transparent);
+    overflow: hidden;
+  }
+  .poll-bar i {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+    transition: width 240ms var(--ease);
+  }
+  .me .poll-bar i {
+    background: var(--on-mine);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .poll-bar i {
+      transition: none;
+    }
+  }
+  .poll-n {
+    flex: none;
+    min-width: 14px;
+    font-size: 12px;
+    text-align: right;
+    opacity: 0.75;
+  }
+  .voters {
+    display: block;
+    padding: 0 6px 4px 31px;
+    font-size: 11.5px;
+    opacity: 0.7;
+    overflow-wrap: anywhere;
+  }
+  .poll-more {
+    justify-self: center;
+    margin-top: 2px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 600;
+    color: inherit;
+    opacity: 0.85;
+  }
+  .poll-more:hover:not(:disabled) {
+    background: color-mix(in srgb, currentColor 8%, transparent);
+  }
+  .poll-more:disabled {
+    font-weight: 500;
+    opacity: 0.55;
   }
 
   /* ---- document ---- */

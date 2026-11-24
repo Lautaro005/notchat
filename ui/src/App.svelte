@@ -59,7 +59,12 @@
   );
 </script>
 
-<svelte:window onkeydown={onKey} />
+<!-- Files dropped outside a drop zone must not open in the window. -->
+<svelte:window
+  onkeydown={onKey}
+  ondragover={(e) => e.dataTransfer?.types.includes("Files") && e.preventDefault()}
+  ondrop={(e) => e.dataTransfer?.types.includes("Files") && e.preventDefault()}
+/>
 
 {#if ready}
   {#if linked}

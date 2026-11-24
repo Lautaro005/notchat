@@ -180,6 +180,7 @@ fn kind_label(kind: &str) -> &str {
         "document" => "file",
         "sticker" => "sticker",
         "viewonce" => "view-once photo, only viewable on the phone",
+        "poll" => "poll",
         "text" => "",
         _ => "attachment",
     }
@@ -231,6 +232,18 @@ fn format_messages(messages: &[Message]) -> String {
             line.push_str(&m.text_with_names());
             if m.edited {
                 line.push_str(" (edited)");
+            }
+            if let Some(poll) = &m.poll {
+                let options: Vec<String> = poll
+                    .options
+                    .iter()
+                    .map(|o| {
+                        let votes = o.voters.len() + usize::from(o.mine);
+                        let mine = if o.mine { ", incl. me" } else { "" };
+                        format!("\"{}\" {votes} votes{mine}", o.name)
+                    })
+                    .collect();
+                line.push_str(&format!(" (options: {})", options.join("; ")));
             }
             if !m.reactions.is_empty() {
                 let r: Vec<String> = m

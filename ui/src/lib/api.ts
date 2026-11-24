@@ -50,8 +50,13 @@ export interface ChatList {
 
 export interface Participant {
   jid: string;
+  /** Contact-book name or `~` + WhatsApp name; empty when unknown. */
   name: string;
+  /** `+` and digits; empty when only a private id is known. */
+  phone: string;
   admin: boolean;
+  /** True for this account. */
+  me: boolean;
 }
 
 export interface GroupInfo {
@@ -118,6 +123,8 @@ export interface Message {
   sender_phone?: string;
   /** Display name of whoever wrote the quoted message. */
   quote_name?: string;
+  /** Options and votes when `kind` is "poll". */
+  poll?: Poll;
 }
 
 /** A WhatsApp user as shown: contact name, `~` + own name, or phone. */
@@ -135,6 +142,22 @@ export interface Reaction {
   emoji: string;
   sender_jid: string;
   from_me: boolean;
+  /** Who reacted: contact name, `~` + WhatsApp name or phone. */
+  name: string;
+  phone: string;
+}
+
+export interface PollOption {
+  name: string;
+  /** Everyone who picked it, except me. */
+  voters: Person[];
+  mine: boolean;
+}
+
+export interface Poll {
+  /** How many options one person may pick; 0 means any number. */
+  selectable: number;
+  options: PollOption[];
 }
 
 export interface Sticker {
@@ -272,6 +295,7 @@ export const api = {
     invoke<Message>("send_text", { jid, text, replyTo: replyTo ?? null }),
   message: (jid: string, id: string) => invoke<Message | null>("get_message", { jid, id }),
   react: (jid: string, id: string, emoji: string) => invoke<void>("msg_react", { jid, id, emoji }),
+  votePoll: (jid: string, id: string, options: string[]) => invoke<void>("msg_vote_poll", { jid, id, options }),
   edit: (jid: string, id: string, text: string) => invoke<void>("msg_edit", { jid, id, text }),
   deleteMessage: (jid: string, id: string, everyone: boolean) => invoke<void>("msg_delete", { jid, id, everyone }),
   star: (jid: string, id: string, starred: boolean) => invoke<void>("msg_star", { jid, id, starred }),

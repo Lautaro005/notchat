@@ -183,6 +183,7 @@ pub fn run() {
             chats::storage_delete_older,
             messages::get_message,
             messages::msg_react,
+            messages::msg_vote_poll,
             messages::msg_edit,
             messages::msg_delete,
             messages::msg_star,
