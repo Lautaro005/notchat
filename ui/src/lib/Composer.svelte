@@ -4,6 +4,7 @@
   import { api } from "./api";
   import { app, appendSent, chatTitle, kindOf, MAX_FILE, openMenu, send, sendFile } from "./app.svelte";
   import { EMOJI } from "./emoji";
+  import { textWithNames } from "./messageMenu";
   import { bytes, duration, t, tf, type Key } from "./i18n";
   import type { Sticker } from "./api";
 
@@ -408,7 +409,7 @@
       <span class="cic"><Icon name={app.editing ? "pencil" : "reply"} size={16} /></span>
       <span class="cbody">
         <b>{app.editing ? t("msg.editing") : tf("msg.replyingTo", { name: replyName() })}</b>
-        <span>{m?.text || (m ? t(`kind.${m.kind}` as Key) : "")}</span>
+        <span>{(m && textWithNames(m)) || (m ? t(`kind.${m.kind}` as Key) : "")}</span>
       </span>
       <button class="icon-btn" onclick={cancelContext} aria-label={t("msg.cancelReply")} title={t("msg.cancelReply")}>
         <Icon name="close" size={16} />

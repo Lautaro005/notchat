@@ -2708,7 +2708,7 @@ dependencies = [
 
 [[package]]
 name = "notchat"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "base64 0.23.1",
  "block2",
@@ -2729,7 +2729,7 @@ dependencies = [
 
 [[package]]
 name = "notchat-core"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -5543,8 +5543,6 @@ dependencies = [
 [[package]]
 name = "waproto"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd19a927d4781e92382a478d234f74baeacb4822ceeb45c665bb9cb321622c35"
 dependencies = [
  "buffa",
  "buffa-build",

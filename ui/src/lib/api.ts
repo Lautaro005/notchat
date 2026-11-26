@@ -54,6 +54,8 @@ export interface Participant {
   name: string;
   /** `+` and digits; empty when only a private id is known. */
   phone: string;
+  /** True when the name comes from the contact book. */
+  saved: boolean;
   admin: boolean;
   /** True for this account. */
   me: boolean;
@@ -340,6 +342,8 @@ export const api = {
   typing: (jid: string, typing: boolean) => invoke<void>("set_typing", { jid, typing }),
   avatar: (jid: string) => invoke<string | null>("avatar", { jid }),
   media: (jid: string, id: string) => invoke<string>("media", { jid, id }),
+  /** The sound of a sticker with sound, as a data URL. */
+  mediaSound: (jid: string, id: string) => invoke<string>("media_sound", { jid, id }),
   saveMedia: (jid: string, id: string) => invoke<string>("save_media", { jid, id }),
   sendMedia: (a: { jid: string; kind: SendKind; name: string; mime: string; base64: string; caption: string; seconds: number }) =>
     invoke<Message>("send_media", a),

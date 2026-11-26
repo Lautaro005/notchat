@@ -2,7 +2,7 @@
   import Icon from "./Icon.svelte";
   import { cachedMedia, loadMedia } from "./media.svelte";
   import { bytes, duration, t } from "./i18n";
-  import type { Message } from "./api";
+  import { api, type Message } from "./api";
 
   let { m, onopen }: { m: Message; onopen: (src: string, kind: string) => void } = $props();
 
@@ -10,6 +10,37 @@
   let failed = $state(false);
   let loading = $state(false);
   const src = $derived(cachedMedia(m.chat_jid, m.id));
+  /** Stickers with sound carry the sound's length in `seconds`. */
+  const sound = $derived(m.kind === "sticker" && m.seconds > 0);
+  let player: HTMLAudioElement | null = null;
+  let playing = $state(false);
+  let soundLoading = $state(false);
+
+  async function toggleSound(e: MouseEvent) {
+    e.stopPropagation();
+    if (playing && player) {
+      player.pause();
+      player.currentTime = 0;
+      playing = false;
+      return;
+    }
+    if (soundLoading) return;
+    try {
+      if (!player) {
+        soundLoading = true;
+        player = new Audio(await api.mediaSound(m.chat_jid, m.id));
+        player.onended = () => (playing = false);
+      }
+      await player.play();
+      playing = true;
+    } catch {
+      failed = true;
+    } finally {
+      soundLoading = false;
+    }
+  }
+
+  $effect(() => () => player?.pause());
 
   async function load() {
     if (!m.has_media || loading) return;
@@ -34,9 +65,24 @@
   <!-- svelte-ignore a11y_media_has_caption -->
   <video class="media" {src} controls preload="metadata"></video>
 {:else if src}
-  <button class="media img" class:sticker={m.kind === "sticker"} onclick={() => onopen(src, m.kind)} aria-label={t("kind.image")}>
-    <img {src} alt="" draggable="false" />
-  </button>
+  <div class="wrap">
+    <button class="media img" class:sticker={m.kind === "sticker"} onclick={() => onopen(src, m.kind)} aria-label={t("kind.image")}>
+      <img {src} alt="" draggable="false" />
+    </button>
+    {#if sound}
+      <button
+        class="sound"
+        class:on={playing}
+        onclick={toggleSound}
+        disabled={soundLoading}
+        aria-pressed={playing}
+        aria-label={playing ? t("sticker.stop") : t("sticker.play")}
+        title={playing ? t("sticker.stop") : t("sticker.play")}
+      >
+        {#if soundLoading}<span class="spin"></span>{:else}<Icon name={playing ? "pause" : "volume"} size={14} />{/if}
+      </button>
+    {/if}
+  </div>
 {:else}
   <div class="media holder" class:sticker={m.kind === "sticker"}>
     <Icon name={m.kind === "video" ? "camera" : "image"} size={26} />
@@ -77,6 +123,28 @@
     width: 100%;
     max-height: 360px;
     object-fit: cover;
+  }
+  .wrap {
+    position: relative;
+    width: fit-content;
+  }
+  .sound {
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    background: rgb(0 0 0 / 0.55);
+    color: #fff;
+    transition: background 140ms var(--ease);
+  }
+  .sound:hover,
+  .sound.on {
+    background: var(--accent);
+    color: var(--on-accent);
   }
   .sticker {
     width: 140px;

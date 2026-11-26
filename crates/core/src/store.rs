@@ -120,6 +120,9 @@ pub struct Message {
     /// Display name of whoever wrote the quoted message.
     #[serde(default)]
     pub quote_name: String,
+    /// JIDs mentioned in the quoted text, as received.
+    #[serde(default, skip)]
+    pub quote_mention_jids: Vec<String>,
     /// Options and votes of a poll (`kind = "poll"`), resolved when read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub poll: Option<Poll>,
@@ -281,7 +284,7 @@ pub struct Oldest {
 /// Columns read by [`row_to_message`], in order.
 const MSG_COLS: &str = "id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
     mime,file_name,size,seconds,media IS NOT NULL,quote_id,quote_sender,quote_text,
-    quote_kind,forwarded,edited,deleted,starred,pinned,mentions,poll";
+    quote_kind,forwarded,edited,deleted,starred,pinned,mentions,poll,quote_mentions";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS chats (
@@ -843,8 +846,8 @@ impl Store {
             "INSERT OR IGNORE INTO messages
                (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
                 mime,file_name,size,seconds,media,raw,
-                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions,poll)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
+                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions,poll,quote_mentions)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
             params![
                 m.chat_jid,
                 m.id,
@@ -867,7 +870,8 @@ impl Store {
                 m.quote_kind,
                 m.forwarded,
                 m.mention_jids.join(","),
-                m.poll_def
+                m.poll_def,
+                m.quote_mention_jids.join(",")
             ],
         )? > 0;
         if inserted {
@@ -1632,6 +1636,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         ("chats", "last_from_me", "INTEGER NOT NULL DEFAULT 0"),
         ("messages", "mentions", "TEXT NOT NULL DEFAULT ''"),
         ("messages", "poll", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "quote_mentions", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (table, column, decl) in columns {
         if !has(table, column)? {
@@ -1693,6 +1698,12 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             .map(str::to_string)
             .collect(),
         poll_def: r.get(24)?,
+        quote_mention_jids: r
+            .get::<_, String>(25)?
+            .split(',')
+            .filter(|j| !j.is_empty())
+            .map(str::to_string)
+            .collect(),
         ..Default::default()
     })
 }
@@ -1807,6 +1818,34 @@ fn resolve_people(conn: &Connection, out: &mut [Message]) {
         }
         if !m.quote_sender.is_empty() && m.quote_sender != "me" {
             m.quote_name = get(&m.quote_sender, "").name;
+        }
+        if m.quote_text.contains('@') {
+            // Mentions in the quoted text: from the quote itself, or (older
+            // rows) from the original message when it is stored here.
+            let jids = if m.quote_mention_jids.is_empty() && !m.quote_id.is_empty() {
+                conn.query_row(
+                    "SELECT mentions FROM messages WHERE chat_jid = ?1 AND id = ?2",
+                    params![m.chat_jid, m.quote_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .map(|s| {
+                    s.split(',')
+                        .filter(|j| !j.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+            } else {
+                m.quote_mention_jids.clone()
+            };
+            for jid in jids {
+                let p = get(&jid, "");
+                if !p.user.is_empty() && !p.name.is_empty() {
+                    m.quote_text = m
+                        .quote_text
+                        .replace(&format!("@{}", p.user), &format!("@{}", p.name));
+                }
+            }
         }
         m.mentions = m.mention_jids.iter().map(|j| get(j, "")).collect();
         for r in m.reactions.iter_mut().filter(|r| !r.from_me) {
@@ -2190,6 +2229,31 @@ mod tests {
         assert!(m.poll.unwrap().options.iter().all(|o| !o.mine));
         s.mark_deleted("g@g.us", "p").unwrap();
         assert!(s.poll_def("g@g.us", "p").unwrap().is_none());
+    }
+
+    #[test]
+    fn mentions_in_quotes_show_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        s.upsert_contact("1@s.whatsapp.net", "Ana", false).unwrap();
+        s.upsert_contact("2@s.whatsapp.net", "Beto", true).unwrap();
+        let mut original = msg("g@g.us", "o", 10, "@1 y @2 vienen?", false);
+        original.mention_jids = vec!["1@s.whatsapp.net".into(), "2@s.whatsapp.net".into()];
+        s.insert_message(&original, true).unwrap();
+        // A reply that carries the quote's mentions itself.
+        let mut reply = msg("g@g.us", "r", 20, "sí", true);
+        reply.quote_id = "o".into();
+        reply.quote_text = "@1 y @2 vienen?".into();
+        reply.quote_mention_jids = vec!["1@s.whatsapp.net".into(), "3@s.whatsapp.net".into()];
+        s.insert_message(&reply, true).unwrap();
+        // An older reply without them: the original message is looked up.
+        let mut old = msg("g@g.us", "r2", 30, "dale", true);
+        old.quote_id = "o".into();
+        old.quote_text = "@1 y @2 vienen?".into();
+        s.insert_message(&old, true).unwrap();
+        let page = s.list_messages("g@g.us", None, 10).unwrap();
+        assert_eq!(page[1].quote_text, "@Ana y @2 vienen?");
+        assert_eq!(page[2].quote_text, "@Ana y @~Beto vienen?");
     }
 
     #[test]

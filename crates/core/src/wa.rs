@@ -93,6 +93,8 @@ pub struct Participant {
     pub name: String,
     /// `+` and digits; empty when WhatsApp only gave a private id.
     pub phone: String,
+    /// True when the name comes from the contact book.
+    pub saved: bool,
     pub admin: bool,
     /// True for this account.
     pub me: bool,
@@ -156,6 +158,8 @@ struct Described {
     quote_sender: String,
     quote_text: String,
     quote_kind: String,
+    /// JIDs mentioned with `@` in the quoted text.
+    quote_mentions: Vec<String>,
     forwarded: bool,
     /// JIDs mentioned with `@` in the text.
     mentions: Vec<String>,
@@ -177,6 +181,7 @@ impl Described {
         m.quote_sender = self.quote_sender;
         m.quote_text = self.quote_text;
         m.quote_kind = self.quote_kind;
+        m.quote_mention_jids = self.quote_mentions;
         m.forwarded = self.forwarded;
         m.mention_jids = self.mentions;
         m.poll_def = self.poll.map(|p| p.to_json()).unwrap_or_default();
@@ -209,12 +214,19 @@ fn context_of(base: &wa::Message) -> Option<&wa::ContextInfo> {
                 .as_option()
                 .and_then(|m| m.context_info.as_option())
         })
-        .or_else(|| {
-            base.sticker_message
-                .as_option()
-                .and_then(|m| m.context_info.as_option())
-        })
+        .or_else(|| sticker_of(base).and_then(|m| m.context_info.as_option()))
         .or_else(|| poll_of(base).and_then(|m| m.context_info.as_option()))
+}
+
+/// The sticker of a message: a plain one, or one with sound (the
+/// `audioStickerMessage` wrapper, whose sticker carries an `audioMessage`).
+fn sticker_of(base: &wa::Message) -> Option<&wa::message::StickerMessage> {
+    base.sticker_message.as_option().or_else(|| {
+        base.audio_sticker_message
+            .as_option()
+            .and_then(|w| w.message.as_option())
+            .and_then(|m| m.sticker_message.as_option())
+    })
 }
 
 /// The poll a message creates, whichever version of the field carries it.
@@ -248,6 +260,9 @@ fn with_context(mut d: Described, base: &wa::Message) -> Described {
             d.quote_sender = ctx.participant.clone().unwrap_or_default();
             d.quote_text = q.text.chars().take(300).collect();
             d.quote_kind = q.kind.to_string();
+            d.quote_mentions = context_of(quoted.get_base_message())
+                .map(|c| c.mentioned_jid.clone())
+                .unwrap_or_default();
         }
     }
     d
@@ -340,11 +355,18 @@ fn describe_body(message: &wa::Message) -> Described {
             ..Default::default()
         };
     }
-    if let Some(m) = base.sticker_message.as_option() {
+    if let Some(m) = sticker_of(base) {
+        // Stickers with sound: `seconds` > 0 tells the interface there is
+        // something to play; the sound's keys travel inside the sticker's.
+        let seconds = m
+            .audio_message
+            .as_option()
+            .map_or(0, |a| i64::from(a.seconds.unwrap_or(0)).max(1));
         return Described {
             kind: "sticker",
             mime: m.mimetype.clone().unwrap_or_default(),
             size: size_of(m.file_length),
+            seconds,
             keys: Some(m.encode_to_vec()),
             ..Default::default()
         };
@@ -637,7 +659,12 @@ impl WaClient {
             Some(&raw),
             true,
         )?;
-        Ok(message)
+        // Read it back so names (quoted author, mentions) are resolved like
+        // every other message the interface shows.
+        Ok(self
+            .store
+            .get_message(chat_jid, &message.id)?
+            .unwrap_or(message))
     }
 
     /// The key WhatsApp uses to point at a stored message.
@@ -936,6 +963,17 @@ impl WaClient {
     }
 
     /// Downloads and decrypts a stored message's media.
+    /// Downloads the sound of a sticker with sound (`keys`: the sticker's).
+    pub async fn download_sticker_sound(&self, keys: &[u8]) -> Result<Vec<u8>> {
+        let sticker = wa::message::StickerMessage::decode_from_slice(keys)
+            .map_err(|_| Error::Invalid("media keys".into()))?;
+        let audio = sticker
+            .audio_message
+            .as_option()
+            .ok_or_else(|| Error::Invalid("this sticker has no sound".into()))?;
+        self.download("audio", &audio.encode_to_vec()).await
+    }
+
     pub async fn download(&self, kind: &str, keys: &[u8]) -> Result<Vec<u8>> {
         self.ready()?;
         let bad = |_| Error::Invalid("media keys".into());
@@ -1043,6 +1081,7 @@ impl WaClient {
                     jid,
                     name,
                     phone: person.phone,
+                    saved: person.saved,
                     admin,
                     me: is_me,
                 }
@@ -1301,9 +1340,7 @@ async fn handle_event(
             }
             let _ = tx.send(WaEvent::ChatsChanged);
         }
-        Event::Receipt(receipt)
-            if receipt.r#type == whatsapp_rust::wacore::types::presence::ReceiptType::ReadSelf =>
-        {
+        Event::Receipt(receipt) if read_on_own_device(receipt, &own_jids(client)) => {
             // Read on the phone (or another linked device). In one-to-one
             // chats the receipt names our own address, not the chat: the
             // chat is found from the message ids instead.
@@ -1640,6 +1677,22 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
         }
     }
     imported
+}
+
+/// True for a receipt saying we read messages on another of our devices.
+/// With read receipts on, the phone sends a plain `read` receipt from our own
+/// address (`read-self` only when read receipts are turned off), and it also
+/// arrives from the offline queue when Notchat was closed at the time.
+fn read_on_own_device(receipt: &whatsapp_rust::types::events::Receipt, me: &[String]) -> bool {
+    use whatsapp_rust::wacore::types::presence::ReceiptType;
+    match receipt.r#type {
+        ReceiptType::ReadSelf => true,
+        ReceiptType::Read => {
+            let sender = receipt.source.sender.to_string();
+            me.iter().any(|j| user_part(j) == user_part(&sender))
+        }
+        _ => false,
+    }
 }
 
 /// Learns LID ↔ phone-number pairs from a message's addressing.
@@ -1995,15 +2048,17 @@ pub fn save_sticker_from_message(store: &Store, chat_jid: &str, id: &str) -> Res
 }
 
 fn remember_sticker(store: &Store, keys: Option<&[u8]>, ts: i64) -> Option<String> {
-    let keys = keys?;
-    let sticker = wa::message::StickerMessage::decode_from_slice(keys).ok()?;
+    let mut sticker = wa::message::StickerMessage::decode_from_slice(keys?).ok()?;
     // Animated Lottie stickers need a player we don't ship.
     if sticker.is_lottie == Some(true) {
         return None;
     }
+    // Saved stickers are sent as plain stickers: their sound stays behind.
+    sticker.audio_message = MessageField::none();
+    sticker.context_info = MessageField::none();
     let sha = sticker.file_sha256.as_deref().filter(|s| !s.is_empty())?;
     let id: String = sha.iter().map(|b| format!("{b:02x}")).collect();
-    if let Err(e) = store.add_sticker(&id, keys, ts) {
+    if let Err(e) = store.add_sticker(&id, &sticker.encode_to_vec(), ts) {
         log::warn!("failed to remember sticker: {e}");
         return None;
     }
@@ -2341,6 +2396,96 @@ mod tests {
         assert_eq!(
             store.get_chat("g@g.us").unwrap().unwrap().last_preview,
             "📊 ¿Pizza?"
+        );
+    }
+
+    #[test]
+    fn reads_on_our_phone_are_recognised() {
+        use whatsapp_rust::types::events::Receipt;
+        use whatsapp_rust::wacore::types::message::MessageSource;
+        use whatsapp_rust::wacore::types::presence::ReceiptType;
+        let me = vec![
+            "5491100000000@s.whatsapp.net".to_string(),
+            "111@lid".to_string(),
+        ];
+        let receipt = |sender: &str, kind: ReceiptType| {
+            Receipt::builder()
+                .message_ids(vec!["A".into()])
+                .source(MessageSource {
+                    chat: sender.parse().unwrap(),
+                    sender: sender.parse().unwrap(),
+                    ..Default::default()
+                })
+                .timestamp(chrono::Utc::now())
+                .r#type(kind)
+                .offline(true)
+                .build()
+        };
+        // Read receipts on: a plain `read` from our own address (any device).
+        assert!(read_on_own_device(
+            &receipt("5491100000000:3@s.whatsapp.net", ReceiptType::Read),
+            &me
+        ));
+        assert!(read_on_own_device(
+            &receipt("111@lid", ReceiptType::Read),
+            &me
+        ));
+        // Read receipts off.
+        assert!(read_on_own_device(
+            &receipt("5491100000000@s.whatsapp.net", ReceiptType::ReadSelf),
+            &me
+        ));
+        // A contact reading what we sent is not ours.
+        assert!(!read_on_own_device(
+            &receipt("5491155555555@s.whatsapp.net", ReceiptType::Read),
+            &me
+        ));
+        assert!(!read_on_own_device(
+            &receipt("5491100000000@s.whatsapp.net", ReceiptType::Delivered),
+            &me
+        ));
+    }
+
+    #[test]
+    fn stickers_with_sound_are_shown_and_saved_silent() {
+        let sticker = wa::message::StickerMessage {
+            mimetype: Some("image/webp".into()),
+            file_sha256: Some(vec![3; 32]),
+            audio_message: MessageField::some(wa::message::AudioMessage {
+                seconds: Some(4),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let msg = wa::Message {
+            audio_sticker_message: MessageField::some(wa::message::FutureProofMessage {
+                message: MessageField::some(wa::Message {
+                    sticker_message: MessageField::some(sticker),
+                    ..Default::default()
+                }),
+            }),
+            ..Default::default()
+        };
+        let d = describe(&msg);
+        assert_eq!(d.kind, "sticker");
+        assert_eq!(
+            d.seconds, 4,
+            "the sound's length marks a sticker with sound"
+        );
+        let keys = d.keys.expect("keys");
+        // The wrapper survives an encode/decode round trip (field 134).
+        let back = wa::Message::decode_from_slice(&msg.encode_to_vec()).unwrap();
+        assert_eq!(describe(&back).seconds, 4);
+
+        let dir = tempfile::tempdir().unwrap();
+        let store =
+            Store::open(&dir.path().join("t.db"), &crate::keychain::generate_key()).unwrap();
+        let id = remember_sticker(&store, Some(&keys), 1).expect("remembered");
+        let saved = store.get_sticker(&id).unwrap().expect("stored");
+        let saved = wa::message::StickerMessage::decode_from_slice(&saved).unwrap();
+        assert!(
+            saved.audio_message.is_unset(),
+            "saved stickers are sent silent"
         );
     }
 }

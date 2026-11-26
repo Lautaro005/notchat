@@ -170,6 +170,7 @@ pub fn run() {
             chats::set_typing,
             chats::avatar,
             chats::media,
+            chats::media_sound,
             chats::save_media,
             chats::send_media,
             chats::list_lists,

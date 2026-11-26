@@ -126,6 +126,12 @@ npm --prefix ui run check
 - Arrastrar archivos: `dragDropEnabled: false` en `tauri.conf.json` para que el webview reciba los `drop` (si no, Tauri se los queda). `App.svelte` cancela los drops fuera de la conversación para que la ventana no navegue al archivo.
 - Fechas en la conversación: los mensajes se agrupan por día (`.dayblock`) para que cada etiqueta sticky quede dentro de su día y no se apilen.
 - Reacciones: clic en una reacción abre `ReactionList.svelte` (quién reaccionó, con nombre y teléfono); la propia se quita desde ahí.
+- `waproto` vendorizado (0.1.8): `vendor/waproto` es `waproto` 0.7.0 con dos `LOCAL_FIELDS` en `build.rs` (`Message.audioStickerMessage = 134`, `StickerMessage.audioMessage = 26`) para los stickers con sonido; entra por `[patch.crates-io]` y está en `exclude` del workspace. Ver `vendor/waproto/NOTCHAT.md`. Borrarlo cuando `whatsapp-rust` publique esos campos.
+- Stickers con sonido: `wa::sticker_of` desenvuelve `audioStickerMessage`; se guardan como `kind = "sticker"` con `seconds` > 0 (duración del sonido). El sonido se baja aparte con `WaClient::download_sticker_sound` / comando `media_sound` y se cachea como `media::sound_id(id)`. `remember_sticker` guarda los stickers sin el sonido.
+- Leídos en el teléfono (corrección de 0.1.8): con confirmaciones de lectura activadas el teléfono manda un recibo `read` desde **nuestra** dirección, no `read-self`; `read_on_own_device` acepta los dos.
+- Menciones en citas: `messages.quote_mentions` guarda los JID mencionados en el texto citado (o se toman del mensaje original si está guardado); `resolve_people` los reemplaza por nombres. `send_and_store` relee el mensaje para que lo enviado ya venga con nombres resueltos.
+- Integrantes de grupo: `Participant.saved`; el teléfono solo se muestra si no está agendado.
+- Notas de actualización: `Updates.svelte` las dibuja con `renderMarkdown` (sin el título de versión).
 - Chequear `src-tauri` desde Linux: `rustup target add aarch64-apple-darwin` y `cargo check/clippy --target aarch64-apple-darwin` con `CC_aarch64_apple_darwin` apuntando a un compilador C falso que solo crea objetos vacíos (no linkea, solo tipa).
 
 ## Acciones que requieren confirmación del usuario

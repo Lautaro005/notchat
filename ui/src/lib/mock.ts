@@ -87,7 +87,7 @@ const messages: Record<string, Message[]> = {
     }),
     m("1", chats[1].jid, 3000, "¿Quién juega hoy?", false, { sender_jid: "5491155550009@s.whatsapp.net", sender_name: "Tomás" }),
     m("2", chats[1].jid, 2900, "Yo voy", true),
-    m("2b", chats[1].jid, 2600, "", false, { kind: "sticker", has_media: true, sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
+    m("2b", chats[1].jid, 2600, "", false, { kind: "sticker", has_media: true, seconds: 3, sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
     m("3", chats[1].jid, 2400, "Falta uno para completar", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R.", forwarded: true }),
     m("3b", chats[1].jid, 2390, "Alguien que traiga pelota", false, { sender_jid: "5491155550008@s.whatsapp.net", sender_name: "Lucía R." }),
     m("3d", chats[1].jid, 2350, "Les paso la cancha: https://maps.app.goo.gl/futbol5palermo", false, { sender_jid: "5491155550009@s.whatsapp.net", sender_name: "Tomás" }),
@@ -185,7 +185,11 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
     case "get_update_auto":
       return true;
     case "check_update":
-      return { version: "0.1.3", notes: "Mejoras de estabilidad.", url: "" };
+      return {
+        version: "0.1.8",
+        notes: "## 0.1.8 — 2026-11-26\n\nMentions in replies and **stickers with sound**.\n\n- **Replies.** Quotes show `@Name` instead of numbers.\n- **Read on the phone** now clears unread here.\n",
+        url: "",
+      };
     case "group_info":
       return {
         subject: "Fútbol de los jueves",
@@ -193,12 +197,12 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
         created: now - 86400 * 400,
         i_am_admin: false,
         participants: [
-          { jid: "5491155550009@s.whatsapp.net", name: "Tomás", phone: "+5491155550009", admin: true, me: false },
-          { jid: "5491155550008@s.whatsapp.net", name: "Lucía R.", phone: "+5491155550008", admin: false, me: false },
-          { jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", phone: "+5491155550001", admin: false, me: false },
-          { jid: "77120@lid", name: "~Nacho", phone: "+5491155550010", admin: false, me: false },
-          { jid: "5491155550022@s.whatsapp.net", name: "", phone: "+5491155550022", admin: false, me: false },
-          { jid: "5491155550000@s.whatsapp.net", name: "", phone: "+5491155550000", admin: false, me: true },
+          { jid: "5491155550009@s.whatsapp.net", name: "Tomás", phone: "+5491155550009", saved: true, admin: true, me: false },
+          { jid: "5491155550008@s.whatsapp.net", name: "Lucía R.", phone: "+5491155550008", saved: true, admin: false, me: false },
+          { jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", phone: "+5491155550001", saved: true, admin: false, me: false },
+          { jid: "77120@lid", name: "~Nacho", phone: "+5491155550010", saved: false, admin: false, me: false },
+          { jid: "5491155550022@s.whatsapp.net", name: "", phone: "+5491155550022", saved: false, admin: false, me: false },
+          { jid: "5491155550000@s.whatsapp.net", name: "", phone: "+5491155550000", saved: false, admin: false, me: true },
         ],
       };
     case "storage_info":

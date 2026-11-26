@@ -41,6 +41,11 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Cache key of the second file some messages carry (a sticker's sound).
+pub fn sound_id(id: &str) -> String {
+    format!("{id}#sound")
+}
+
 pub struct MediaCache {
     root: PathBuf,
 }
@@ -60,6 +65,7 @@ impl MediaCache {
 
     pub fn remove(&self, chat: &str, id: &str) {
         let _ = std::fs::remove_file(self.path(chat, id));
+        let _ = std::fs::remove_file(self.path(chat, &sound_id(id)));
     }
 
     fn chat_dir(&self, chat: &str) -> PathBuf {

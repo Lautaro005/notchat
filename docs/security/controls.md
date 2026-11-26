@@ -30,7 +30,7 @@
 | A.8.26 | Application security requirements | Input validation on every IPC command; strict CSP |
 | A.8.28 | Secure coding | Rust; no `unwrap` outside tests; `unsafe` limited to documented AppKit/libc calls |
 | A.8.29 | Security testing | Unit tests for the policy engine, agent isolation, SSRF guard, encryption at rest |
-| A.8.30 | Outsourced development | Third-party code limited to audited, locked dependencies |
+| A.8.30 | Outsourced development | Third-party code limited to audited, locked dependencies; the one vendored crate (`vendor/waproto`, protobuf definitions) carries a documented two-field patch and is audited with the rest |
 | A.8.32 | Change management | Pull requests, CI required, signed provenance on releases |
 
 ## OWASP ASVS 5.0 (selected requirements)

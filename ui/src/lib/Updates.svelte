@@ -5,6 +5,13 @@
   import { api } from "./api";
   import { app } from "./app.svelte";
   import { t, tf } from "./i18n";
+  import { renderMarkdown } from "./md";
+
+  /** Release notes are Markdown (the CHANGELOG section). The "## 0.1.7 — date"
+   *  heading repeats what the card already says, so it is left out. */
+  const notes = $derived(
+    app.update?.notes ? renderMarkdown(app.update.notes.replace(/^\s*#{1,6}\s*v?\d+\.\d+\.\d+[^\n]*\n?/, "")).html : "",
+  );
 
   let auto = $state(true);
   let version = $state("");
@@ -64,7 +71,8 @@
       <Icon name="download" size={18} />
       <div>
         <strong>{tf("upd.available", { v: app.update.version })}</strong>
-        {#if app.update.notes}<p class="notes">{app.update.notes}</p>{/if}
+        <!-- Escaped Markdown from md.ts: only a fixed set of tags, safe links. -->
+        {#if notes}<div class="notes md">{@html notes}</div>{/if}
       </div>
       <button class="btn primary" onclick={install} disabled={installing}>
         {installing ? t("upd.installing") : t("upd.install")}
@@ -144,11 +152,39 @@
   }
   .notes {
     margin: 6px 0 0;
-    max-height: 120px;
+    max-height: 180px;
     overflow: auto;
     font-size: 12px;
+    line-height: 1.45;
     color: var(--text-2);
-    white-space: pre-wrap;
+  }
+  .notes :global(:is(p, ul, ol, blockquote, pre)) {
+    margin: 0 0 6px;
+  }
+  .notes :global(:is(ul, ol)) {
+    padding-left: 18px;
+  }
+  .notes :global(li) {
+    margin: 2px 0;
+  }
+  .notes :global(:is(h4, h5, h6)) {
+    margin: 8px 0 4px;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .notes :global(strong) {
+    color: var(--text);
+    font-weight: 600;
+  }
+  .notes :global(code) {
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--bg-3);
+    font-size: 11.5px;
+  }
+  .notes :global(a) {
+    color: var(--accent);
   }
   .ok,
   .err {

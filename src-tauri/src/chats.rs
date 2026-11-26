@@ -438,6 +438,27 @@ pub async fn media(state: St<'_>, jid: String, id: String) -> Result<String> {
     Ok(data_url(&mime_of(&message), &bytes))
 }
 
+/// The sound of a sticker with sound, as a data URL.
+#[tauri::command]
+pub async fn media_sound(state: St<'_>, jid: String, id: String) -> Result<String> {
+    check_jid(&jid)?;
+    check_id(&id)?;
+    let key = notchat_core::media::sound_id(&id);
+    if let Some(bytes) = state.media.get(&jid, &key) {
+        return Ok(data_url("audio/ogg", &bytes));
+    }
+    let (kind, keys) = state
+        .store
+        .get_media(&jid, &id)?
+        .ok_or_else(|| Error::Invalid("no media".into()))?;
+    if kind != "sticker" {
+        return Err(Error::Invalid("this message has no sound".into()));
+    }
+    let bytes = wa(&state).await?.download_sticker_sound(&keys).await?;
+    state.media.put(&jid, &key, &bytes)?;
+    Ok(data_url("audio/ogg", &bytes))
+}
+
 pub(crate) fn extension_for(mime: &str) -> &'static str {
     match mime {
         "image/jpeg" => "jpg",

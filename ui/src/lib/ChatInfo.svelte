@@ -93,7 +93,8 @@
           <ul class="people">
             {#each info.participants as p (p.jid)}
               {@const name = p.me ? t("chat.you") : p.name || p.phone || chatTitle({ jid: p.jid, name: "" })}
-              {@const sub = p.me ? p.phone : p.name ? p.phone : ""}
+              <!-- Saved contacts show only their name; the rest show the number under it. -->
+              {@const sub = p.me || (p.name && !p.saved) ? p.phone : ""}
               <li>
                 <Avatar title={name} jid={p.jid} size={32} />
                 <span class="pwho">

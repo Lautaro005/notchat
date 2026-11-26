@@ -70,6 +70,9 @@ and [docs/security/controls.md](docs/security/controls.md).
   resolution and redirects.
 - **Supply chain.** Locked dependencies, `cargo audit` and `cargo deny` in CI,
   CodeQL, Dependabot, a CycloneDX SBOM and signed build provenance for every release.
+  One dependency is vendored with a documented patch: `vendor/waproto` is
+  `waproto` 0.7.0 with two extra protobuf fields (stickers with sound) declared in
+  its `build.rs`; nothing else differs (see `vendor/waproto/NOTCHAT.md`).
 
 ## Certifications
 

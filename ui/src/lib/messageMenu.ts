@@ -21,6 +21,16 @@ export function canEdit(m: Message): boolean {
   return m.from_me && m.kind === "text" && !m.deleted && Date.now() / 1000 - m.ts < EDIT_WINDOW;
 }
 
+/** The text with `@<number>` mentions shown as names (contact, ~name or phone). */
+export function textWithNames(m: Message): string {
+  let text = m.text;
+  for (const p of m.mentions ?? []) {
+    const shown = p.name || p.phone;
+    if (p.user && shown) text = text.split(`@${p.user}`).join(`@${shown}`);
+  }
+  return text;
+}
+
 /** The reaction I already left on a message, if any. */
 export function myReaction(m: Message): string {
   return m.reactions.find((r) => r.from_me)?.emoji ?? "";

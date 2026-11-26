@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.8 — 2026-11-26
+
+Read state that follows your phone, stickers with sound and names in replies.
+
+- **Read on the phone, read here.** Chats you read on your phone now stop counting as unread in Notchat, also when Notchat was closed at the time. Until now this only worked with read receipts turned off: with them on (the default), WhatsApp tells your other devices in a different way, which Notchat ignored.
+- **Stickers with sound.** WhatsApp's new stickers with sound show up instead of disappearing. A small speaker button on the sticker plays the sound. Saved to your stickers, they're sent silent.
+- **Mentions in replies.** The quoted message inside a reply shows `@Name` instead of `@number`, right after you send it too: the contact name if you saved them, otherwise ~ and their WhatsApp name, and the number only when there's no name. Same in the reply box above the composer.
+- **Group members.** Saved contacts show only their name; the phone number appears underneath only for people you haven't saved.
+- **Release notes are formatted.** The "new version available" card in Settings → Updates shows the notes with headings, bold and lists instead of raw `#` and `*`.
+
 ## 0.1.7 — 2026-11-24
 
 Polls, drag-and-drop that works and quieter archived chats.

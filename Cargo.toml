@@ -1,12 +1,18 @@
 [workspace]
 resolver = "2"
 members = ["crates/core", "src-tauri"]
+# Patched copy of waproto (see vendor/waproto/NOTCHAT.md), not a member.
+exclude = ["vendor"]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 license = "MIT"
 rust-version = "1.94"
+
+# waproto 0.7.0 plus the two proto fields of stickers with sound.
+[patch.crates-io]
+waproto = { path = "vendor/waproto" }
 
 [profile.release]
 opt-level = "s"
