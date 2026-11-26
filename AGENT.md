@@ -132,6 +132,7 @@ npm --prefix ui run check
 - Menciones en citas: `messages.quote_mentions` guarda los JID mencionados en el texto citado (o se toman del mensaje original si está guardado); `resolve_people` los reemplaza por nombres. `send_and_store` relee el mensaje para que lo enviado ya venga con nombres resueltos.
 - Integrantes de grupo: `Participant.saved`; el teléfono solo se muestra si no está agendado.
 - Notas de actualización: `Updates.svelte` las dibuja con `renderMarkdown` (sin el título de versión).
+- Release sin poder pushear el tag (las sesiones cloud bloquean el push de tags): workflow `Release` → *Run workflow* con `tag` = `vX.Y.Z` (debe coincidir con `Cargo.toml`); construye la rama elegida y crea tag + release con `gh release create --target`. Si el release ya existía (creado a mano), le sube los archivos con `--clobber`.
 - Chequear `src-tauri` desde Linux: `rustup target add aarch64-apple-darwin` y `cargo check/clippy --target aarch64-apple-darwin` con `CC_aarch64_apple_darwin` apuntando a un compilador C falso que solo crea objetos vacíos (no linkea, solo tipa).
 
 ## Acciones que requieren confirmación del usuario
