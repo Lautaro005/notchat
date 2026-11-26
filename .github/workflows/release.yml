@@ -3,6 +3,13 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  # Manual run from the Actions tab (or the API) when a tag can't be pushed:
+  # builds the selected branch and creates the tag with the release.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v0.1.8 (must match the version in Cargo.toml)"
+        required: true
 
 permissions:
   contents: read
@@ -16,10 +23,19 @@ jobs:
       attestations: write
     env:
       HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+      # Passed through env, never interpolated into scripts.
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+      - name: Check tag
+        run: |
+          # The tag must look like vX.Y.Z and match the version being built.
+          echo "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "Bad tag: $TAG"; exit 1; }
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [ "v$CARGO_VERSION" = "$TAG" ] || { echo "Tag $TAG does not match Cargo.toml $CARGO_VERSION"; exit 1; }
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
@@ -62,7 +78,7 @@ jobs:
 
       - name: Package and checksum
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           mkdir dist
           APP_DIR=target/universal-apple-darwin/release/bundle/macos
           tar -czf "dist/Notchat_${VERSION}_universal.app.tar.gz" -C "$APP_DIR" Notchat.app
@@ -82,11 +98,25 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           # Release notes: only this version's section of CHANGELOG.md.
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           awk -v v="$VERSION" '/^## /{p = index($0, "## " v " ") == 1} p' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "No CHANGELOG section for $VERSION"; exit 1; }
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "Notchat $GITHUB_REF_NAME" \
-            --notes-file notes.md \
-            --verify-tag
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Already created by hand on GitHub: attach the files and notes.
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Notchat $TAG" --notes-file notes.md
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # Manual run: the tag is created here, on the commit just built.
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "Notchat $TAG" \
+              --notes-file notes.md
+          else
+            gh release create "$TAG" dist/* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "Notchat $TAG" \
+              --notes-file notes.md \
+              --verify-tag
+          fi
