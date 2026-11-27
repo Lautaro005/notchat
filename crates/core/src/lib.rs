@@ -10,6 +10,7 @@ pub mod managed;
 pub mod media;
 pub mod net;
 pub mod policy;
+pub mod sound;
 pub mod store;
 pub mod update;
 pub mod wa;

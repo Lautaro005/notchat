@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.9 — 2026-11-27
+
+Delivery ticks, a notification sound and member profiles.
+
+- **Sent, delivered, read.** Your messages in one-to-one chats show WhatsApp's ticks: one for sent, two for delivered, two in blue for read. The chat list shows them before the preview when the last message is yours (not when it's theirs). They update live as the other person gets and reads your messages; history from the phone comes with its ticks too. Groups don't show them yet, and messages from before this version have none.
+- **Notification sound.** Settings → Notifications has a sound switch (on by default): new-message notifications play macOS's "Glass" sound, or an MP3 of your own (up to 5 MB) that you choose there. "Play" previews it. Muted and archived chats stay silent, and a burst of messages plays it once.
+- **Member profiles.** Clicking someone in a group's member list opens a card with their picture, name (and their own WhatsApp name if you saved them under another one), phone number with a copy button, whether they're an admin of the group, and a button to message them. Mentions open the same card.
+- **Replies to photos.** The quote in a reply to a photo, video or sticker now shows a small preview of it. Clicking any quote takes you to the original message, loading older messages if needed (until now it only worked when the original was already on screen, and silently did nothing otherwise).
+- **Photos open centred.** An opened photo now always fits the window and stays centred, whatever its size and the window's. Tall photos used to start halfway down and run off the bottom.
+
 ## 0.1.8 — 2026-11-26
 
 Read state that follows your phone, stickers with sound and names in replies.

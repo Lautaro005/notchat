@@ -27,7 +27,7 @@
 | A.8.20–A.8.22 | Network security / segregation | Outbound guard blocks private, loopback, link-local and CGNAT ranges |
 | A.8.24 | Use of cryptography | SQLCipher (AES-256), raw 256-bit random keys, TLS for all downloads |
 | A.8.25 | Secure development life cycle | Threat model, code review, CI gates (fmt, clippy `-D warnings`, tests, audit, deny) |
-| A.8.26 | Application security requirements | Input validation on every IPC command; strict CSP |
+| A.8.26 | Application security requirements | Input validation on every IPC command (e.g. notification sounds: MP3 header and size checked in Rust); strict CSP |
 | A.8.28 | Secure coding | Rust; no `unwrap` outside tests; `unsafe` limited to documented AppKit/libc calls |
 | A.8.29 | Security testing | Unit tests for the policy engine, agent isolation, SSRF guard, encryption at rest |
 | A.8.30 | Outsourced development | Third-party code limited to audited, locked dependencies; the one vendored crate (`vendor/waproto`, protobuf definitions) carries a documented two-field patch and is audited with the rest |

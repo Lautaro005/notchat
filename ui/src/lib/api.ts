@@ -40,12 +40,20 @@ export interface Chat {
   /** Who sent the last message (groups); empty when it was me. */
   last_sender: string;
   last_from_me: boolean;
+  /** Delivery state of my last message in a one-to-one chat: 0 none, 1 sent, 2 delivered, 3 read. */
+  last_status: number;
 }
 
 export interface ChatList {
   id: number;
   name: string;
   jids: string[];
+}
+
+/** Notification sound: on/off and the user's own MP3 (empty name: the default sound). */
+export interface SoundConfig {
+  enabled: boolean;
+  custom_name: string;
 }
 
 export interface Participant {
@@ -56,6 +64,8 @@ export interface Participant {
   phone: string;
   /** True when the name comes from the contact book. */
   saved: boolean;
+  /** The name they gave themselves on WhatsApp (no `~`); empty when unknown. */
+  push_name: string;
   admin: boolean;
   /** True for this account. */
   me: boolean;
@@ -127,6 +137,10 @@ export interface Message {
   quote_name?: string;
   /** Options and votes when `kind` is "poll". */
   poll?: Poll;
+  /** My messages: 0 unknown, 1 sent, 2 delivered, 3 read. */
+  status: number;
+  /** Small preview (`data:` URL) of a quoted photo or video; empty when none. */
+  quote_thumb: string;
 }
 
 /** A WhatsApp user as shown: contact name, `~` + own name, or phone. */
@@ -138,6 +152,8 @@ export interface Person {
   phone: string;
   /** True when the name comes from the contact book. */
   saved: boolean;
+  /** The name they gave themselves on WhatsApp (no `~`); empty when unknown. */
+  push_name?: string;
 }
 
 export interface Reaction {
@@ -273,6 +289,11 @@ export const api = {
   notchHide: () => invoke<void>("notch_hide"),
   notchOpenChat: (jid: string) => invoke<void>("notch_open_chat", { jid }),
   notchTest: (title: string, text: string) => invoke<void>("notch_test", { title, text }),
+  notifySound: () => invoke<SoundConfig>("get_notify_sound"),
+  setNotifySoundEnabled: (enabled: boolean) => invoke<SoundConfig>("set_notify_sound_enabled", { enabled }),
+  setNotifySoundFile: (name: string, base64: string) => invoke<SoundConfig>("set_notify_sound_file", { name, base64 }),
+  clearNotifySound: () => invoke<SoundConfig>("clear_notify_sound"),
+  testNotifySound: () => invoke<void>("test_notify_sound"),
   suggestReply: (jid: string) => invoke<string>("suggest_reply", { jid }),
   providers: () => invoke<Provider[]>("detect_providers"),
   aiConfig: () => invoke<AiConfig>("get_ai_config"),

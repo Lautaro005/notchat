@@ -95,6 +95,8 @@ pub struct Participant {
     pub phone: String,
     /// True when the name comes from the contact book.
     pub saved: bool,
+    /// The name they gave themselves on WhatsApp (no `~`); empty when unknown.
+    pub push_name: String,
     pub admin: bool,
     /// True for this account.
     pub me: bool,
@@ -160,6 +162,8 @@ struct Described {
     quote_kind: String,
     /// JIDs mentioned with `@` in the quoted text.
     quote_mentions: Vec<String>,
+    /// Preview of a quoted photo or video, as a `data:` URL.
+    quote_thumb: String,
     forwarded: bool,
     /// JIDs mentioned with `@` in the text.
     mentions: Vec<String>,
@@ -182,6 +186,7 @@ impl Described {
         m.quote_text = self.quote_text;
         m.quote_kind = self.quote_kind;
         m.quote_mention_jids = self.quote_mentions;
+        m.quote_thumb = self.quote_thumb;
         m.forwarded = self.forwarded;
         m.mention_jids = self.mentions;
         m.poll_def = self.poll.map(|p| p.to_json()).unwrap_or_default();
@@ -263,9 +268,56 @@ fn with_context(mut d: Described, base: &wa::Message) -> Described {
             d.quote_mentions = context_of(quoted.get_base_message())
                 .map(|c| c.mentioned_jid.clone())
                 .unwrap_or_default();
+            d.quote_thumb = quote_thumb(quoted.get_base_message());
         }
     }
     d
+}
+
+/// The small JPEG preview a quoted photo or video carries, as a `data:` URL
+/// (empty when there is none or it is unreasonably large).
+fn quote_thumb(quoted: &wa::Message) -> String {
+    use base64::Engine;
+    const MAX_THUMB: usize = 48 * 1024;
+    let thumb = quoted
+        .image_message
+        .as_option()
+        .and_then(|m| m.jpeg_thumbnail.as_ref())
+        .or_else(|| {
+            quoted
+                .video_message
+                .as_option()
+                .and_then(|m| m.jpeg_thumbnail.as_ref())
+        });
+    match thumb {
+        Some(bytes) if !bytes.is_empty() && bytes.len() <= MAX_THUMB => format!(
+            "data:image/jpeg;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ),
+        _ => String::new(),
+    }
+}
+
+/// Our stored delivery state for a history message's WhatsApp status.
+fn history_status(status: Option<wa::web_message_info::Status>) -> u8 {
+    use wa::web_message_info::Status;
+    match status {
+        Some(Status::SERVER_ACK) => 1,
+        Some(Status::DELIVERY_ACK) => 2,
+        Some(Status::READ | Status::PLAYED) => 3,
+        _ => 0,
+    }
+}
+
+/// Our delivery state for a receipt the other person sent about my messages.
+fn receipt_status(kind: &whatsapp_rust::wacore::types::presence::ReceiptType) -> Option<u8> {
+    use whatsapp_rust::wacore::types::presence::ReceiptType;
+    match kind {
+        ReceiptType::Sent => Some(1),
+        ReceiptType::Delivered => Some(2),
+        ReceiptType::Read | ReceiptType::Played => Some(3),
+        _ => None,
+    }
 }
 
 fn size_of(len: Option<u64>) -> i64 {
@@ -645,6 +697,7 @@ impl WaClient {
             from_me: true,
             ts: chrono::Utc::now().timestamp(),
             by_ai,
+            status: 1,
             ..Default::default()
         };
         let keys = described.fill(&mut message);
@@ -1082,6 +1135,7 @@ impl WaClient {
                     name,
                     phone: person.phone,
                     saved: person.saved,
+                    push_name: person.push_name,
                     admin,
                     me: is_me,
                 }
@@ -1360,6 +1414,39 @@ async fn handle_event(
                 }
             }
         }
+        Event::Receipt(receipt) if !receipt.source.is_group => {
+            // The other person got (or read) my messages: raise their ticks.
+            // Groups are skipped: one receipt per member says little alone.
+            let Some(status) = receipt_status(&receipt.r#type) else {
+                return;
+            };
+            // Our own devices acknowledge our messages too: those say nothing
+            // about the other person.
+            let sender = receipt.source.sender.to_string();
+            if own_jids(client)
+                .iter()
+                .any(|j| user_part(j) == user_part(&sender))
+            {
+                return;
+            }
+            let ids: Vec<String> = receipt
+                .message_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if let Ok(changed) = store.raise_status(&ids, status) {
+                let mut chats = Vec::new();
+                for (chat_jid, id) in changed {
+                    if !chats.contains(&chat_jid) {
+                        chats.push(chat_jid.clone());
+                    }
+                    let _ = tx.send(WaEvent::MessageChanged { chat_jid, id });
+                }
+                for jid in chats {
+                    let _ = tx.send(WaEvent::ChatUpdated { jid });
+                }
+            }
+        }
         Event::ContactUpdate(update) => {
             for (lid, pn) in [
                 (update.action.lid_jid.clone(), update.action.pn_jid.clone()),
@@ -1618,6 +1705,11 @@ fn import_history(history: &wa::HistorySync, store: &Store, me: &[String]) -> us
                     .message_timestamp
                     .map_or(0, |t| i64::try_from(t).unwrap_or(0)),
                 starred: info.starred == Some(true),
+                status: if from_me {
+                    history_status(info.status)
+                } else {
+                    0
+                },
                 ..Default::default()
             };
             let mut d = d;
@@ -1816,6 +1908,7 @@ async fn on_message(
         sender_name: info.push_name.clone(),
         from_me: info.source.is_from_me,
         ts: info.timestamp.timestamp(),
+        status: u8::from(info.source.is_from_me),
         ..Default::default()
     };
     let keys = d.fill(&mut message);
@@ -2444,6 +2537,56 @@ mod tests {
             &receipt("5491100000000@s.whatsapp.net", ReceiptType::Delivered),
             &me
         ));
+    }
+
+    #[test]
+    fn replies_to_photos_keep_a_thumbnail() {
+        let quoted = wa::Message {
+            image_message: MessageField::some(wa::message::ImageMessage {
+                jpeg_thumbnail: Some(vec![0xFF, 0xD8, 0xFF]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let reply = wa::Message {
+            extended_text_message: MessageField::some(wa::message::ExtendedTextMessage {
+                text: Some("lindo".into()),
+                context_info: MessageField::some(wa::ContextInfo {
+                    stanza_id: Some("P1".into()),
+                    quoted_message: MessageField::some(quoted),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let d = describe(&reply);
+        assert_eq!(d.quote_id, "P1");
+        assert_eq!(d.quote_kind, "image");
+        assert_eq!(d.quote_thumb, "data:image/jpeg;base64,/9j/");
+        // Absurdly large thumbnails are dropped rather than stored.
+        let big = wa::Message {
+            image_message: MessageField::some(wa::message::ImageMessage {
+                jpeg_thumbnail: Some(vec![0; 100 * 1024]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(quote_thumb(&big), "");
+    }
+
+    #[test]
+    fn receipts_map_to_ticks() {
+        use wa::web_message_info::Status;
+        use whatsapp_rust::wacore::types::presence::ReceiptType;
+        assert_eq!(receipt_status(&ReceiptType::Delivered), Some(2));
+        assert_eq!(receipt_status(&ReceiptType::Read), Some(3));
+        assert_eq!(receipt_status(&ReceiptType::Played), Some(3));
+        assert_eq!(receipt_status(&ReceiptType::Retry), None);
+        assert_eq!(history_status(Some(Status::SERVER_ACK)), 1);
+        assert_eq!(history_status(Some(Status::DELIVERY_ACK)), 2);
+        assert_eq!(history_status(Some(Status::READ)), 3);
+        assert_eq!(history_status(None), 0);
     }
 
     #[test]

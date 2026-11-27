@@ -63,6 +63,10 @@ and [docs/security/controls.md](docs/security/controls.md).
 - **Hardened webview.** Strict Content Security Policy, no remote content,
   minimal Tauri capabilities, every command input validated in Rust. Files dragged
   onto the window are only queued as attachments, never opened as a page.
+- **Notification sound.** A custom sound must be an MP3 (checked by its header,
+  5 MB at most) and is copied into the app's data folder with owner-only
+  permissions. It is played by macOS's own `/usr/bin/afplay`, started directly
+  with the file path as its only argument (no shell), so Notchat never decodes it.
 - **Poll votes.** Votes are decrypted with each poll's own secret, which never leaves
   the encrypted database; votes that fail to decrypt are ignored.
 - **Outbound web guard.** Assistant web requests can reach only public addresses;

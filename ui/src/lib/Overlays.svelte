@@ -59,7 +59,7 @@
 {/if}
 
 {#if app.person}
-  <PersonCard p={app.person.p} x={app.person.x} y={app.person.y} />
+  <PersonCard p={app.person.p} x={app.person.x} y={app.person.y} admin={app.person.admin ?? false} group={app.person.group ?? ""} />
 {/if}
 
 {#if app.confirm}

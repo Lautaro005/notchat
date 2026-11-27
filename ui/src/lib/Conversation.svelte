@@ -7,6 +7,7 @@
   import MediaView from "./MediaView.svelte";
   import ReactBar from "./ReactBar.svelte";
   import ReactionList from "./ReactionList.svelte";
+  import Ticks from "./Ticks.svelte";
   import VoicePlayer from "./VoicePlayer.svelte";
   import { api } from "./api";
   import { app, chatTitle, fetchOlderFromPhone, isMuted, loadOlder, openMenu, toast } from "./app.svelte";
@@ -26,6 +27,7 @@
   import { bytes, dayKey, dayLabel, t, tf, time, type Key } from "./i18n";
   import type { Message, Person } from "./api";
   import { linkParts } from "./md";
+  import { cachedMedia, loadMedia } from "./media.svelte";
 
   let scroller: HTMLElement | undefined = $state();
   let composer: Composer | undefined = $state();
@@ -196,6 +198,31 @@
     };
   }
 
+  /** Preview picture for a quoted photo, video or sticker: the original's own
+   *  file when it is here, else the small thumbnail the reply carried. */
+  function quoteThumb(m: Message): string {
+    if (!["image", "video", "sticker"].includes(m.quote_kind)) return "";
+    if (m.quote_kind !== "video") {
+      const own = cachedMedia(m.chat_jid, m.quote_id);
+      if (own) return own;
+    }
+    return m.quote_thumb;
+  }
+
+  // Quoted photos and stickers whose reply carried no thumbnail: fetch the
+  // original (when stored) once, so the quote can show it.
+  $effect(() => {
+    const wanted = app.messages.filter((m) => m.quote_id && !m.quote_thumb && (m.quote_kind === "image" || m.quote_kind === "sticker"));
+    if (!wanted.length) return;
+    const byId = new Map(app.messages.map((x) => [x.id, x]));
+    for (const m of wanted) {
+      if (!cachedMedia(m.chat_jid, m.quote_id)) {
+        const original = byId.get(m.quote_id);
+        if (original?.has_media && (original.size === 0 || original.size < 6_000_000)) void loadMedia(m.chat_jid, m.quote_id).catch(() => {});
+      }
+    }
+  });
+
   function quotePreview(m: Message): string {
     if (m.quote_text) return m.quote_text;
     return m.quote_kind && m.quote_kind !== "text" ? t(`kind.${m.quote_kind}` as Key) : "";
@@ -284,8 +311,17 @@
   }
 
   async function jumpTo(id: string) {
-    const el = document.getElementById(`msg-${id}`);
-    if (!el) return;
+    let el = document.getElementById(`msg-${id}`);
+    // An older message: load earlier pages until it shows up (bounded, so a
+    // reply to something never stored here doesn't load the whole chat).
+    for (let page = 0; !el && app.hasOlder && page < 30; page++) {
+      await older();
+      el = document.getElementById(`msg-${id}`);
+    }
+    if (!el) {
+      toast(t("msg.notLoaded"));
+      return;
+    }
     el.scrollIntoView({ block: "center", behavior: "smooth" });
     flash = id;
     setTimeout(() => {
@@ -480,9 +516,11 @@
                     <span class="fwd"><Icon name="forward" size={13} />{t("msg.forwarded")}</span>
                   {/if}
                   {#if m.quote_id}
-                    <button class="quote" onclick={(e) => { e.stopPropagation(); void jumpTo(m.quote_id); }} title={t("msg.jump")}>
+                    {@const thumb = quoteThumb(m)}
+                    <button class="quote" class:thumbed={!!thumb} onclick={(e) => { e.stopPropagation(); void jumpTo(m.quote_id); }} title={t("msg.jump")}>
                       <b>{quoteName(m)}</b>
                       <span>{quotePreview(m)}</span>
+                      {#if thumb}<img class="qthumb" class:sticker={m.quote_kind === "sticker"} src={thumb} alt="" draggable="false" />{/if}
                     </button>
                   {/if}
                   {#if visual.has(m.kind)}
@@ -554,6 +592,7 @@
                   {#if m.edited && !m.deleted}<span>{t("msg.edited")}</span>{/if}
                   {#if m.by_ai}<span class="ai"><Icon name="spark" size={11} /></span>{/if}
                   {time(m.ts)}
+                  {#if m.from_me && !chat?.is_group && !m.deleted}<Ticks status={m.status} size={16} mine={m.kind !== "sticker" && !(visual.has(m.kind) && !m.text && !m.quote_id)} />{/if}
                 </span>
                 {#if !app.selecting}
                   <button class="chev" aria-label={t("msg.more")} onclick={(e) => { e.stopPropagation(); menuFor(e, m); }}>
@@ -922,7 +961,7 @@
     transition: background 200ms var(--ease);
   }
   .msg.reacted {
-    margin-bottom: 18px;
+    margin-bottom: 22px;
   }
   .msg.me {
     flex-direction: row-reverse;
@@ -1175,6 +1214,28 @@
     line-height: 1.35;
     transition: background 140ms var(--ease);
   }
+  .quote.thumbed {
+    grid-template-columns: 1fr auto;
+    column-gap: 10px;
+    min-height: 52px;
+  }
+  .quote.thumbed b,
+  .quote.thumbed span {
+    grid-column: 1;
+  }
+  .qthumb {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    align-self: center;
+    width: 44px;
+    height: 44px;
+    margin: -2px -4px -2px 0;
+    border-radius: 7px;
+    object-fit: cover;
+  }
+  .qthumb.sticker {
+    object-fit: contain;
+  }
   .quote:hover {
     background: color-mix(in srgb, currentColor 13%, transparent);
   }
@@ -1282,7 +1343,8 @@
   /* ---- reactions ---- */
   .reactions {
     position: absolute;
-    bottom: -15px;
+    /* Low enough to leave the time and ticks above it uncovered. */
+    bottom: -20px;
     left: 10px;
     display: flex;
     gap: 3px;
@@ -1605,9 +1667,13 @@
     animation: fadein 160ms var(--ease);
     cursor: zoom-out;
   }
+  /* Sized against the viewport: a percentage max-height inside an auto grid
+     row resolves to nothing, so a tall photo overflowed off the bottom. */
   .lightbox img {
-    max-width: 100%;
-    max-height: 100%;
+    display: block;
+    max-width: calc(100vw - 96px);
+    max-height: calc(100vh - 96px);
+    object-fit: contain;
     border-radius: 8px;
     box-shadow: 0 30px 80px rgb(0 0 0 / 0.5);
   }

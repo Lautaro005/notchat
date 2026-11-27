@@ -4,10 +4,10 @@
   import Managed from "./Managed.svelte";
   import Segmented from "./Segmented.svelte";
   import Switch from "./Switch.svelte";
-  import { api, type Mode, type NotifyMode, type Provider, type ProviderPorts } from "./api";
+  import { api, type Mode, type NotifyMode, type Provider, type ProviderPorts, type SoundConfig } from "./api";
   import Storage from "./Storage.svelte";
   import Updates from "./Updates.svelte";
-  import { aiReady, app, applyTheme, saveAiConfig, saveAutoReply, toast, type Theme } from "./app.svelte";
+  import { aiReady, app, applyTheme, readBase64, saveAiConfig, saveAutoReply, toast, type Theme } from "./app.svelte";
   import { locale, t, type Key } from "./i18n";
 
   let providers = $state<Provider[]>([]);
@@ -22,6 +22,36 @@
   ];
 
   let notify = $state<NotifyMode>("notch");
+  let sound = $state<SoundConfig>({ enabled: true, custom_name: "" });
+  let soundInput: HTMLInputElement | undefined = $state();
+  let soundBusy = $state(false);
+  /** Same limit as the backend (`sound::MAX_BYTES`). */
+  const SOUND_MAX = 5 * 1000 * 1000;
+
+  async function setSoundOn(v: boolean) {
+    sound = await api.setNotifySoundEnabled(v);
+  }
+
+  async function pickSound(e: Event) {
+    const input = e.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    if (file.size > SOUND_MAX) return toast(t("set.soundTooBig"));
+    soundBusy = true;
+    try {
+      sound = await api.setNotifySoundFile(file.name, await readBase64(file));
+      void api.testNotifySound();
+    } catch {
+      toast(t("set.soundInvalid"));
+    } finally {
+      soundBusy = false;
+    }
+  }
+
+  async function defaultSound() {
+    sound = await api.clearNotifySound();
+  }
   let systemUnavailable = $state(false);
 
   const notifyModes: { value: NotifyMode; label: string }[] = [
@@ -74,6 +104,7 @@
 
   onMount(async () => {
     notify = await api.notifyMode();
+    sound = await api.notifySound().catch(() => sound);
     ports = await api.aiPorts().catch(() => ports);
     await scan();
   });
@@ -155,6 +186,24 @@
       <p class="hint">{t("set.notifyHint")}</p>
       <Segmented label={t("set.notify")} value={notify} options={notifyModes} onchange={setNotify} />
       {#if systemUnavailable}<p class="hint">{t("set.notifyUnavailable")}</p>{/if}
+      <label class="line spaced">
+        <span><strong>{t("set.sound")}</strong><small>{t("set.soundHint")}</small></span>
+        <Switch checked={sound.enabled} label={t("set.sound")} onchange={setSoundOn} disabled={notify === "off"} />
+      </label>
+      <div class="group" class:dim={!sound.enabled || notify === "off"}>
+        <div class="soundrow">
+          <Icon name="volume" size={16} />
+          <span class="sname" title={sound.custom_name || t("set.soundDefault")}>{sound.custom_name || t("set.soundDefault")}</span>
+          <button class="btn quiet small" onclick={() => api.testNotifySound()}>{t("set.soundTest")}</button>
+        </div>
+        <div class="soundacts">
+          <button class="btn small" onclick={() => soundInput?.click()} disabled={soundBusy}>{t("set.soundPick")}</button>
+          {#if sound.custom_name}
+            <button class="btn quiet small" onclick={defaultSound}>{t("set.soundReset")}</button>
+          {/if}
+          <input bind:this={soundInput} type="file" accept=".mp3,audio/mpeg" hidden onchange={pickSound} />
+        </div>
+      </div>
     </section>
         {:else if current.id === "ai"}
     <section>
@@ -603,6 +652,31 @@
   }
   .group.dim {
     opacity: 0.5;
+  }
+  .line.spaced {
+    margin-top: 12px;
+  }
+  .soundrow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 8px 8px 12px;
+    border-radius: 10px;
+    background: var(--bg-2);
+    color: var(--text-2);
+  }
+  .sname {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: var(--text);
+    font-size: 13px;
+  }
+  .soundacts {
+    display: flex;
+    gap: 6px;
   }
   .field {
     display: grid;

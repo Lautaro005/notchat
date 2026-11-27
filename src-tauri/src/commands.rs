@@ -359,6 +359,58 @@ pub fn set_notify_mode(state: St<'_>, mode: String) -> Result<()> {
     state.store.set_setting(KEY_NOTIFY, &mode)
 }
 
+// ---- notification sound ------------------------------------------------------------
+
+use notchat_core::sound::{self, SoundConfig};
+
+#[tauri::command]
+pub fn get_notify_sound(state: St<'_>) -> SoundConfig {
+    state.store.get_json(sound::KEY)
+}
+
+#[tauri::command]
+pub fn set_notify_sound_enabled(state: St<'_>, enabled: bool) -> Result<SoundConfig> {
+    let config = SoundConfig {
+        enabled,
+        ..state.store.get_json(sound::KEY)
+    };
+    state.store.set_json(sound::KEY, &config)?;
+    Ok(config)
+}
+
+/// Stores the user's MP3 (sent as base64) as the notification sound.
+#[tauri::command]
+pub fn set_notify_sound_file(state: St<'_>, name: String, base64: String) -> Result<SoundConfig> {
+    if base64.len() > sound::MAX_BYTES / 3 * 4 + 8 {
+        return Err(Error::Invalid("sound size".into()));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64.as_bytes())
+        .map_err(|_| Error::Invalid("sound data".into()))?;
+    let config = sound::save_custom(
+        &state.data_dir,
+        &name,
+        &bytes,
+        &state.store.get_json(sound::KEY),
+    )?;
+    state.store.set_json(sound::KEY, &config)?;
+    Ok(config)
+}
+
+/// Back to the default sound.
+#[tauri::command]
+pub fn clear_notify_sound(state: St<'_>) -> Result<SoundConfig> {
+    let config = sound::clear_custom(&state.data_dir, &state.store.get_json(sound::KEY))?;
+    state.store.set_json(sound::KEY, &config)?;
+    Ok(config)
+}
+
+/// Plays the current sound once (the preview button in Settings).
+#[tauri::command]
+pub fn test_notify_sound(state: St<'_>) {
+    crate::notify::play_sound(state.inner(), true);
+}
+
 /// Asks macOS for notification permission. Returns false when system
 /// notifications are unavailable (not running from an app bundle).
 #[tauri::command]

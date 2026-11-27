@@ -15,6 +15,8 @@
   --on-mine: #ffffff;
   --mine-2: rgb(255 255 255 / 0.72);
   --accent: #5847e0;
+  --read: #1d9bd1;
+  --read-on-mine: #8fe3ff;
   --accent-soft: #ebe8fd;
   --on-accent: #ffffff;
   --danger: #c2261d;
@@ -67,6 +69,8 @@
     --on-mine: #ffffff;
     --mine-2: rgb(255 255 255 / 0.7);
     --accent: #a598ff;
+    --read: #5ac8fa;
+    --read-on-mine: #8fe3ff;
     --accent-soft: #29244d;
     --on-accent: #120d33;
     --danger: #ff8a80;
@@ -102,6 +106,8 @@
   --on-mine: #ffffff;
   --mine-2: rgb(255 255 255 / 0.7);
   --accent: #a598ff;
+  --read: #5ac8fa;
+  --read-on-mine: #8fe3ff;
   --accent-soft: #29244d;
   --on-accent: #120d33;
   --danger: #ff8a80;

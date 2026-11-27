@@ -131,7 +131,8 @@ export const app = $state({
   /** Bumped to ask the open chat to scroll to its unread divider. */
   jumpUnread: 0,
   /** A mentioned person's card: name, phone, actions. */
-  person: null as null | { p: Person; x: number; y: number },
+  /** `admin` and `group` when opened from a group's member list. */
+  person: null as null | { p: Person; x: number; y: number; admin?: boolean; group?: string },
   notes: [] as Note[],
   notesView: stored<NotesView>("notesView", "chat"),
   ai: {
@@ -395,7 +396,7 @@ export async function refreshNotes() {
   app.notes = await api.notes();
 }
 
-function readBase64(blob: Blob): Promise<string> {
+export function readBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).split(",", 2)[1] ?? "");

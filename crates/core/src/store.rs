@@ -33,6 +33,10 @@ pub struct Chat {
     pub last_sender: String,
     #[serde(default)]
     pub last_from_me: bool,
+    /// Delivery state of the last message when it is mine in a one-to-one
+    /// chat ([`Message::status`]); 0 otherwise.
+    #[serde(default)]
+    pub last_status: u8,
 }
 
 impl Chat {
@@ -129,6 +133,14 @@ pub struct Message {
     /// The stored poll definition (JSON of [`PollDef`]); never sent to the UI.
     #[serde(default, skip)]
     pub poll_def: String,
+    /// Delivery state of my own messages: 0 unknown, 1 sent, 2 delivered,
+    /// 3 read (or played). Only raised, never lowered.
+    #[serde(default)]
+    pub status: u8,
+    /// Small preview of a quoted photo or video (`data:` URL), when the reply
+    /// carried one.
+    #[serde(default)]
+    pub quote_thumb: String,
 }
 
 /// A poll as WhatsApp defines it: what is stored with the message.
@@ -210,6 +222,9 @@ pub struct Person {
     pub phone: String,
     /// True when the name comes from the contact book.
     pub saved: bool,
+    /// The name they gave themselves on WhatsApp (no `~`); empty when unknown.
+    #[serde(default)]
+    pub push_name: String,
 }
 
 /// One person's reaction to a message.
@@ -284,7 +299,8 @@ pub struct Oldest {
 /// Columns read by [`row_to_message`], in order.
 const MSG_COLS: &str = "id,chat_jid,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
     mime,file_name,size,seconds,media IS NOT NULL,quote_id,quote_sender,quote_text,
-    quote_kind,forwarded,edited,deleted,starred,pinned,mentions,poll,quote_mentions";
+    quote_kind,forwarded,edited,deleted,starred,pinned,mentions,poll,quote_mentions,
+    status,quote_thumb";
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS chats (
@@ -431,7 +447,13 @@ impl Store {
                            '~' || NULLIF(c.last_sender_name, ''),
                            c.last_sender) END
                       AS last_sender,
-                    c.last_from_me
+                    c.last_from_me,
+                    CASE WHEN c.last_from_me AND NOT c.is_group
+                         THEN COALESCE((SELECT status FROM messages
+                                        WHERE chat_jid = c.jid AND from_me = 1
+                                        ORDER BY ts DESC LIMIT 1), 0)
+                         ELSE 0 END
+                      AS last_status
              FROM chats c;",
         )?;
         Ok(Self {
@@ -846,8 +868,10 @@ impl Store {
             "INSERT OR IGNORE INTO messages
                (chat_jid,id,sender_jid,sender_name,from_me,ts,kind,text,by_ai,
                 mime,file_name,size,seconds,media,raw,
-                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions,poll,quote_mentions)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+                quote_id,quote_sender,quote_text,quote_kind,forwarded,mentions,poll,quote_mentions,
+                status,quote_thumb)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,
+                     ?24,?25)",
             params![
                 m.chat_jid,
                 m.id,
@@ -871,7 +895,9 @@ impl Store {
                 m.forwarded,
                 m.mention_jids.join(","),
                 m.poll_def,
-                m.quote_mention_jids.join(",")
+                m.quote_mention_jids.join(","),
+                m.status,
+                m.quote_thumb
             ],
         )? > 0;
         if inserted {
@@ -906,6 +932,28 @@ impl Store {
         }
         tx.commit()?;
         Ok(inserted)
+    }
+
+    /// Raises the delivery state of my own messages (receipts from the other
+    /// person). Returns the `(chat, id)` of each message that changed.
+    pub fn raise_status(&self, ids: &[String], status: u8) -> Result<Vec<(String, String)>> {
+        let conn = self.lock();
+        let mut changed = Vec::new();
+        for id in ids {
+            let chat: Option<String> = conn
+                .query_row(
+                    "UPDATE messages SET status = ?2
+                     WHERE id = ?1 AND from_me = 1 AND status < ?2
+                     RETURNING chat_jid",
+                    params![id, status],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(chat) = chat {
+                changed.push((chat, id.clone()));
+            }
+        }
+        Ok(changed)
     }
 
     /// The encoded media keys of a message, with its kind.
@@ -1637,6 +1685,8 @@ fn migrate(conn: &Connection) -> Result<()> {
         ("messages", "mentions", "TEXT NOT NULL DEFAULT ''"),
         ("messages", "poll", "TEXT NOT NULL DEFAULT ''"),
         ("messages", "quote_mentions", "TEXT NOT NULL DEFAULT ''"),
+        ("messages", "status", "INTEGER NOT NULL DEFAULT 0"),
+        ("messages", "quote_thumb", "TEXT NOT NULL DEFAULT ''"),
     ];
     for (table, column, decl) in columns {
         if !has(table, column)? {
@@ -1662,6 +1712,7 @@ fn row_to_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chat> {
         marked_unread: r.get(11)?,
         last_sender: r.get(12)?,
         last_from_me: r.get(13)?,
+        last_status: r.get(14)?,
     })
 }
 
@@ -1704,6 +1755,8 @@ fn row_to_message(r: &rusqlite::Row<'_>) -> rusqlite::Result<Message> {
             .filter(|j| !j.is_empty())
             .map(str::to_string)
             .collect(),
+        status: r.get(26)?,
+        quote_thumb: r.get(27)?,
         ..Default::default()
     })
 }
@@ -1774,7 +1827,7 @@ fn person(conn: &Connection, jid: &str, push: &str) -> Person {
         &jid,
     )
     .or_else(|| Some(push.to_string()).filter(|p| !p.is_empty()));
-    let name = match (&saved, own) {
+    let name = match (&saved, &own) {
         (Some(n), _) => n.clone(),
         (None, Some(p)) => format!("~{p}"),
         (None, None) => phone.clone(),
@@ -1785,6 +1838,7 @@ fn person(conn: &Connection, jid: &str, push: &str) -> Person {
         name,
         phone,
         saved: saved.is_some(),
+        push_name: own.unwrap_or_default(),
     }
 }
 
@@ -2254,6 +2308,65 @@ mod tests {
         let page = s.list_messages("g@g.us", None, 10).unwrap();
         assert_eq!(page[1].quote_text, "@Ana y @2 vienen?");
         assert_eq!(page[2].quote_text, "@Ana y @~Beto vienen?");
+    }
+
+    #[test]
+    fn delivery_ticks_only_go_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        let mut mine = msg("1@s.whatsapp.net", "a", 10, "hola", true);
+        mine.status = 1;
+        s.insert_message(&mine, false).unwrap();
+        s.insert_message(&msg("1@s.whatsapp.net", "b", 5, "che", false), false)
+            .unwrap();
+        assert_eq!(
+            s.get_chat("1@s.whatsapp.net").unwrap().unwrap().last_status,
+            1
+        );
+
+        let changed = s
+            .raise_status(&["a".into(), "b".into(), "zz".into()], 3)
+            .unwrap();
+        // Only my own message changes; theirs never carries ticks.
+        assert_eq!(
+            changed,
+            vec![("1@s.whatsapp.net".to_string(), "a".to_string())]
+        );
+        // A late "delivered" never lowers "read".
+        assert!(s.raise_status(&["a".into()], 2).unwrap().is_empty());
+        let m = s.get_message("1@s.whatsapp.net", "a").unwrap().unwrap();
+        assert_eq!(m.status, 3);
+        assert_eq!(
+            s.get_chat("1@s.whatsapp.net").unwrap().unwrap().last_status,
+            3
+        );
+
+        // Their reply is now the last message: no ticks in the list.
+        s.insert_message(&msg("1@s.whatsapp.net", "c", 20, "dale", false), false)
+            .unwrap();
+        assert_eq!(
+            s.get_chat("1@s.whatsapp.net").unwrap().unwrap().last_status,
+            0
+        );
+
+        // Groups never show ticks in the list.
+        let mut g = msg("g@g.us", "d", 30, "hola", true);
+        g.status = 3;
+        s.insert_message(&g, true).unwrap();
+        assert_eq!(s.get_chat("g@g.us").unwrap().unwrap().last_status, 0);
+    }
+
+    #[test]
+    fn quote_thumbnails_are_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = Store::open(&dir.path().join("t.db"), &generate_key()).unwrap();
+        let mut reply = msg("1@s.whatsapp.net", "r", 10, "lindo", true);
+        reply.quote_id = "p".into();
+        reply.quote_kind = "image".into();
+        reply.quote_thumb = "data:image/jpeg;base64,AAAA".into();
+        s.insert_message(&reply, false).unwrap();
+        let back = s.get_message("1@s.whatsapp.net", "r").unwrap().unwrap();
+        assert_eq!(back.quote_thumb, "data:image/jpeg;base64,AAAA");
     }
 
     #[test]

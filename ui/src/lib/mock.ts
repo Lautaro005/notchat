@@ -5,14 +5,14 @@ import type { Chat, Message, Note, Status } from "./api";
 const now = Math.floor(Date.now() / 1000);
 const view = new URLSearchParams(location.search).get("view") ?? "chats";
 
-const base = { auto_reply: false, instructions: "", archived: false, pinned: 0, muted_until: 0, marked_unread: false, last_sender: "", last_from_me: false };
+const base = { auto_reply: false, instructions: "", archived: false, pinned: 0, muted_until: 0, marked_unread: false, last_sender: "", last_from_me: false, last_status: 0 };
 const chats: Chat[] = [
   { ...base, jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", is_group: false, last_ts: now - 90, last_preview: "Dale, nos vemos a las 8 entonces", unread: 2, pinned: now },
   { ...base, jid: "120363000000000001@g.us", name: "Fútbol de los jueves", is_group: true, last_ts: now - 2400, last_preview: "Falta uno para completar", unread: 5, auto_reply: true, muted_until: -1, last_sender: "Lucía R." },
-  { ...base, jid: "5491155550002@s.whatsapp.net", name: "", is_group: false, last_ts: now - 90000, last_preview: "[document]", unread: 0 },
-  { ...base, jid: "5491155550003@s.whatsapp.net", name: "Mamá", is_group: false, last_ts: now - 260000, last_preview: "[voice]", unread: 0, marked_unread: true },
+  { ...base, jid: "5491155550002@s.whatsapp.net", name: "", is_group: false, last_ts: now - 90000, last_preview: "[document]", unread: 0, last_from_me: true, last_status: 2 },
+  { ...base, jid: "5491155550003@s.whatsapp.net", name: "Mamá", is_group: false, last_ts: now - 260000, last_preview: "[voice]", unread: 0, marked_unread: true, last_from_me: true, last_status: 1 },
   { ...base, jid: "120363000000000002@g.us", name: "Depto Palermo · expensas y arreglos del edificio", is_group: true, last_ts: now - 400000, last_preview: "Ya transferí lo de este mes, mañana paso el comprobante por el grupo así lo tienen todos", unread: 0, last_from_me: true },
-  { ...base, jid: "5491155550004@s.whatsapp.net", name: "Martín (trabajo)", is_group: false, last_ts: now - 600000, last_preview: "Te paso el informe el lunes", unread: 0 },
+  { ...base, jid: "5491155550004@s.whatsapp.net", name: "Martín (trabajo)", is_group: false, last_ts: now - 600000, last_preview: "Te paso el informe el lunes", unread: 0, last_from_me: true, last_status: 3 },
   { ...base, jid: "5491155550005@s.whatsapp.net", name: "Viejo chat", is_group: false, last_ts: now - 9000000, last_preview: "Gracias!", unread: 1, archived: true },
 ];
 
@@ -48,6 +48,8 @@ function m(id: string, chat: string, ago: number, text: string, from_me = false,
     starred: false,
     pinned: 0,
     reactions: [],
+    status: from_me ? 3 : 0,
+    quote_thumb: "",
     ...extra,
   };
 }
@@ -58,6 +60,7 @@ const messages: Record<string, Message[]> = {
     m("2", chats[0].jid, 90400, "Sí, salgo del trabajo a las 7 y voy directo", true),
     m("3", chats[0].jid, 700, "Te mando la dirección", false),
     m("4", chats[0].jid, 690, "", false, { kind: "image", has_media: true, size: 182000, mime: "image/jpeg" }),
+    m("4a", chats[0].jid, 670, "¡Qué lindo lugar!", true, { quote_id: "4", quote_sender: chats[0].jid, quote_kind: "image", status: 2 }),
     m("4b", chats[0].jid, 650, "", true, { kind: "voice", has_media: true, seconds: 14, mime: "audio/ogg" }),
     m("4c", chats[0].jid, 600, "", false, { kind: "document", has_media: true, size: 1240000, file_name: "Contrato alquiler 2026.pdf", mime: "application/pdf" }),
     m("5", chats[0].jid, 400, "Perfecto. Llevo algo para tomar, ¿hace falta algo más? Puedo pasar por el súper de camino si me avisás antes de las 6.", true, { reactions: [{ emoji: "❤️", sender_jid: chats[0].jid, from_me: false, name: "Ana Suárez", phone: "+5491155550001" }] }),
@@ -197,11 +200,11 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
         created: now - 86400 * 400,
         i_am_admin: false,
         participants: [
-          { jid: "5491155550009@s.whatsapp.net", name: "Tomás", phone: "+5491155550009", saved: true, admin: true, me: false },
-          { jid: "5491155550008@s.whatsapp.net", name: "Lucía R.", phone: "+5491155550008", saved: true, admin: false, me: false },
-          { jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", phone: "+5491155550001", saved: true, admin: false, me: false },
-          { jid: "77120@lid", name: "~Nacho", phone: "+5491155550010", saved: false, admin: false, me: false },
-          { jid: "5491155550022@s.whatsapp.net", name: "", phone: "+5491155550022", saved: false, admin: false, me: false },
+          { jid: "5491155550009@s.whatsapp.net", name: "Tomás", phone: "+5491155550009", saved: true, push_name: "Tomi 🏀", admin: true, me: false },
+          { jid: "5491155550008@s.whatsapp.net", name: "Lucía R.", phone: "+5491155550008", saved: true, push_name: "Lucía", admin: false, me: false },
+          { jid: "5491155550001@s.whatsapp.net", name: "Ana Suárez", phone: "+5491155550001", saved: true, push_name: "Ana Suárez", admin: false, me: false },
+          { jid: "77120@lid", name: "~Nacho", phone: "+5491155550010", saved: false, push_name: "Nacho", admin: false, me: false },
+          { jid: "5491155550022@s.whatsapp.net", name: "", phone: "+5491155550022", saved: false, push_name: "", admin: false, me: false },
           { jid: "5491155550000@s.whatsapp.net", name: "", phone: "+5491155550000", saved: false, admin: false, me: true },
         ],
       };
@@ -225,6 +228,14 @@ export async function mockInvoke(cmd: string, args: Record<string, unknown> = {}
       ] };
     case "get_notify_mode":
       return "notch";
+    case "get_notify_sound":
+      return { enabled: true, custom_name: "" };
+    case "set_notify_sound_enabled":
+      return { enabled: !!args?.enabled, custom_name: "" };
+    case "set_notify_sound_file":
+      return { enabled: true, custom_name: String(args?.name ?? "") };
+    case "clear_notify_sound":
+      return { enabled: true, custom_name: "" };
     case "detect_providers":
       return providers;
     case "get_ai_config":

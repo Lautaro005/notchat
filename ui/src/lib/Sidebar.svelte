@@ -1,6 +1,7 @@
 <script lang="ts">
   import Avatar from "./Avatar.svelte";
   import Icon from "./Icon.svelte";
+  import Ticks from "./Ticks.svelte";
   import {
     AI,
     NOTES,
@@ -240,6 +241,7 @@
             </span>
             <span class="bottom">
               <span class="preview" class:italic={p.italic}>
+                {#if !chat.is_group && chat.last_from_me && chat.last_status > 0}<Ticks status={chat.last_status} size={15} />{/if}
                 {#if by}<span class="by">{by}:</span>{/if}
                 {#if p.icon}<Icon name={p.icon as never} size={13} />{/if}<span class="ptext">{p.text}</span>
               </span>

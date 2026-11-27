@@ -1,7 +1,7 @@
 <script lang="ts">
   import Avatar from "./Avatar.svelte";
   import Icon from "./Icon.svelte";
-  import { api, type Chat, type GroupInfo } from "./api";
+  import { api, type Chat, type GroupInfo, type Participant } from "./api";
   import { app, chatTitle, isMuted, openMenu } from "./app.svelte";
   import { chatMenu, newList } from "./chatMenu";
   import { t, tf } from "./i18n";
@@ -39,6 +39,18 @@
   // Lists: the same toggles as the context menu, always visible here.
   async function toggleList(id: number, member: boolean) {
     await api.setListMember(id, chat.jid, !member);
+  }
+
+  /** A member's card, opened beside the row that was clicked. */
+  function openMember(e: MouseEvent, p: Participant) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    app.person = {
+      p: { jid: p.jid, user: p.jid.split("@")[0], name: p.name, phone: p.phone, saved: p.saved, push_name: p.push_name },
+      x: r.left - 290,
+      y: r.top - 8,
+      admin: p.admin,
+      group: info?.subject || title,
+    };
   }
 
   /** Destructive actions are the tail of the chat menu (clear, exit, delete). */
@@ -96,12 +108,14 @@
               <!-- Saved contacts show only their name; the rest show the number under it. -->
               {@const sub = p.me || (p.name && !p.saved) ? p.phone : ""}
               <li>
-                <Avatar title={name} jid={p.jid} size={32} />
-                <span class="pwho">
-                  <span class="pname" class:num={!p.name && !p.me}>{name}</span>
-                  {#if sub}<small class="pphone num">{sub}</small>{/if}
-                </span>
-                {#if p.admin}<span class="tag">{t("info.admin")}</span>{/if}
+                <button class="member" disabled={p.me} onclick={(e) => openMember(e, p)} aria-label={p.me ? name : tf("person.open", { name })}>
+                  <Avatar title={name} jid={p.jid} size={32} />
+                  <span class="pwho">
+                    <span class="pname" class:num={!p.name && !p.me}>{name}</span>
+                    {#if sub}<small class="pphone num">{sub}</small>{/if}
+                  </span>
+                  {#if p.admin}<span class="tag">{t("info.admin")}</span>{/if}
+                </button>
               </li>
             {/each}
           </ul>
@@ -244,11 +258,28 @@
     display: grid;
     gap: 2px;
   }
-  .people li {
+  .member {
+    width: 100%;
     display: flex;
     align-items: center;
     gap: 10px;
     height: 44px;
+    margin: 0 -8px;
+    padding: 0 8px;
+    box-sizing: content-box;
+    border-radius: 10px;
+    text-align: left;
+    transition: background 120ms var(--ease);
+  }
+  .member:not(:disabled):hover,
+  .member:focus-visible {
+    background: var(--bg-2);
+    outline: none;
+  }
+  .member:disabled {
+    cursor: default;
+    opacity: 1;
+    color: inherit;
   }
   .pwho {
     flex: 1;
